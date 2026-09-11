@@ -9,6 +9,7 @@ from deepcat.utils.paths import get_app_dir
 
 APP_NAME = "DeepCat"
 LEGACY_APP_NAMES = ("deepcat", "LongScreenshot")
+RUN_KEY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 
 def _command_for_run_key() -> str:
@@ -48,12 +49,16 @@ def set_autostart(enabled: bool, app_name: str = APP_NAME) -> Optional[str]:
     except Exception:
         return "当前系统不支持开机启动设置"
     try:
-        key = winreg.OpenKey(
+        # 新建 Windows 用户配置可能尚无 Run 项，仅在主动开启时创建。
+        open_key = winreg.CreateKeyEx if enabled else winreg.OpenKey
+        key = open_key(
             winreg.HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            RUN_KEY_PATH,
             0,
             winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE,
         )
+    except FileNotFoundError as e:
+        return str(e) if enabled else None
     except Exception as e:
         return str(e)
     try:
@@ -120,7 +125,7 @@ def is_autostart_enabled(app_name: str = APP_NAME) -> bool:
     try:
         key = winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            RUN_KEY_PATH,
             0,
             winreg.KEY_QUERY_VALUE,
         )
@@ -170,7 +175,7 @@ def refresh_autostart_command(app_name: str = APP_NAME) -> None:
     try:
         key = winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            RUN_KEY_PATH,
             0,
             winreg.KEY_QUERY_VALUE,
         )

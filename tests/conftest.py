@@ -33,6 +33,15 @@ def _non_fatal_excepthook(exc_type, exc, tb):
 sys.excepthook = _non_fatal_excepthook
 
 
+@pytest.fixture(scope="session", autouse=True)
+def qt_application():
+    """整个测试会话持有应用对象，避免临时引用释放后 Qt 控件失去运行环境。"""
+    from PyQt6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    yield app
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
     outcome = yield

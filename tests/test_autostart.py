@@ -5,9 +5,11 @@ import sys
 import winreg
 from pathlib import Path
 from unittest.mock import patch
+from uuid import uuid4
 
 import pytest
 
+from deepcat.utils import autostart
 from deepcat.utils.autostart import (
     APP_NAME,
     LEGACY_APP_NAMES,
@@ -37,33 +39,23 @@ def test_command_for_run_key_unfrozen() -> None:
 def temp_autostart_app_name():
     test_name = f"DeepCat_UnitTestCase_{os.getpid()}"
     legacy_test_name = f"DeepCat_LegacyTest_{os.getpid()}"
-    try:
-        yield test_name, legacy_test_name
-    finally:
-        set_autostart(False, app_name=test_name)
-        # 清理 legacy
+    registry_path = rf"Software\DeepCatTests\Autostart_{uuid4().hex}"
+    # 每次使用不存在的独立子项，覆盖新用户环境并避免触碰真实开机启动配置。
+    with patch.object(autostart, "RUN_KEY_PATH", registry_path):
         try:
-            key = winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                r"Software\Microsoft\Windows\CurrentVersion\Run",
-                0,
-                winreg.KEY_SET_VALUE,
-            )
-            for n in (test_name, legacy_test_name):
-                try:
-                    winreg.DeleteValue(key, n)
-                except FileNotFoundError:
-                    pass
-            winreg.CloseKey(key)
-        except Exception:
-            pass
+            yield test_name, legacy_test_name
+        finally:
+            try:
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, registry_path)
+            except FileNotFoundError:
+                pass
 
 
 def test_set_autostart_and_query_flow(temp_autostart_app_name) -> None:
     test_name, _ = temp_autostart_app_name
 
     # 1. 确保初始未启用
-    set_autostart(False, app_name=test_name)
+    assert set_autostart(False, app_name=test_name) is None
     assert not is_autostart_enabled(app_name=test_name)
 
     # 2. 开启自启
@@ -74,7 +66,7 @@ def test_set_autostart_and_query_flow(temp_autostart_app_name) -> None:
     # 3. 验证真实注册表确实存在值
     key = winreg.OpenKey(
         winreg.HKEY_CURRENT_USER,
-        r"Software\Microsoft\Windows\CurrentVersion\Run",
+        autostart.RUN_KEY_PATH,
         0,
         winreg.KEY_QUERY_VALUE,
     )
@@ -93,7 +85,7 @@ def test_set_autostart_and_query_flow(temp_autostart_app_name) -> None:
     # 5. 验证真实注册表中已被彻底删除
     key = winreg.OpenKey(
         winreg.HKEY_CURRENT_USER,
-        r"Software\Microsoft\Windows\CurrentVersion\Run",
+        autostart.RUN_KEY_PATH,
         0,
         winreg.KEY_QUERY_VALUE,
     )
@@ -123,9 +115,9 @@ def test_refresh_and_legacy_migration(temp_autostart_app_name) -> None:
     test_name, legacy_name = temp_autostart_app_name
 
     # 先以 legacy 名称写入注册表（模拟老版本创建的启动项）
-    key = winreg.OpenKey(
+    key = winreg.CreateKeyEx(
         winreg.HKEY_CURRENT_USER,
-        r"Software\Microsoft\Windows\CurrentVersion\Run",
+        autostart.RUN_KEY_PATH,
         0,
         winreg.KEY_SET_VALUE,
     )
@@ -144,7 +136,7 @@ def test_refresh_and_legacy_migration(temp_autostart_app_name) -> None:
         # 验证新项已建立，旧项已被清除
         key = winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            autostart.RUN_KEY_PATH,
             0,
             winreg.KEY_QUERY_VALUE,
         )
