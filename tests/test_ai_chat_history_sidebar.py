@@ -10,7 +10,7 @@ if sys.platform.startswith("win") and sys.version_info >= (3, 13):
 
 try:
     from PyQt6.QtCore import Qt
-    from PyQt6.QtWidgets import QApplication, QMessageBox, QPushButton
+    from PyQt6.QtWidgets import QApplication, QPushButton
 except Exception:
     pytest.skip("缺少 PyQt6，跳过 AI 历史侧栏测试", allow_module_level=True)
 
@@ -236,7 +236,7 @@ def test_ai_chat_history_sidebar_uses_delegate_items_instead_of_row_widgets():
         sidebar.refresh()
         QApplication.processEvents()
 
-        assert sidebar._list.count() == 60
+        assert sidebar._loaded_record_ids_in_order() == list(range(1, 61))
         for row in range(sidebar._list.count()):
             assert sidebar._list.itemWidget(sidebar._list.item(row)) is None
 
@@ -256,7 +256,7 @@ def test_ai_chat_history_sidebar_context_menu_uses_custom_popup():
     try:
         sidebar.refresh()
         QApplication.processEvents()
-        record = sidebar._record_from_item(sidebar._list.item(0))
+        record = sidebar._record_from_item(sidebar._item_for_record(1))
 
         sidebar._show_record_menu(record, sidebar.mapToGlobal(sidebar.rect().center()))
         QApplication.processEvents()
@@ -292,7 +292,7 @@ def test_ai_chat_history_sidebar_hover_dots_open_same_custom_popup():
         sidebar.refresh()
         QApplication.processEvents()
 
-        item = sidebar._list.item(0)
+        item = sidebar._item_for_record(1)
         row_rect = sidebar._row_rect_for_item(item)
         menu_pos = sidebar._menu_rect_for_row_rect(row_rect).center()
 
@@ -322,7 +322,7 @@ def test_ai_chat_history_sidebar_loads_one_page_per_bottom_scroll():
         QApplication.processEvents()
 
         assert store.calls == [(60, 0), (60, 60)]
-        assert sidebar._list.count() == 120
+        assert sidebar._loaded_record_ids_in_order() == list(range(1, 121))
     finally:
         sidebar.deleteLater()
 
@@ -337,7 +337,7 @@ def test_ai_chat_history_sidebar_prefers_lightweight_summaries():
 
         assert store.summary_calls == [(60, 0)]
         assert store.summary_query_kwargs[0]["task_type_filter"] is None
-        item = sidebar._list.item(0)
+        item = sidebar._item_for_record(1)
         assert item is not None
         assert sidebar._record_from_item(item)["prompt_text"] == ""
     finally:
@@ -352,20 +352,16 @@ def test_ai_chat_history_sidebar_surrounding_delete_range_loads_next_page(monkey
         sidebar.refresh()
         QApplication.processEvents()
 
-        assert sidebar._list.count() == 60
-        assert sidebar._surrounding_record_ids(55, radius=5) == list(range(50, 61))
-        assert sidebar._list.count() == 75
+        assert sidebar._loaded_record_ids_in_order() == list(range(1, 61))
+        assert sidebar._surrounding_record_ids(56, radius=5) == list(range(51, 62))
+        assert sidebar._loaded_record_ids_in_order() == list(range(1, 76))
         assert store.calls == [(60, 0), (60, 60)]
 
-        monkeypatch.setattr(
-            QMessageBox,
-            "question",
-            lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
-        )
-        record = sidebar._record_from_item(sidebar._item_for_record(55))
+        monkeypatch.setattr(sidebar, "_confirm_delete", lambda *args, **kwargs: True)
+        record = sidebar._record_from_item(sidebar._item_for_record(56))
         sidebar._delete_surrounding_records(record)
 
-        assert store.deleted_record_ids == list(range(50, 61))
+        assert store.deleted_record_ids == list(range(51, 62))
     finally:
         sidebar.deleteLater()
 
@@ -398,7 +394,22 @@ def test_ai_chat_history_sidebar_surrounding_delete_skips_pinned_records():
             record["is_pinned"] = 1
             item.setData(_AI_CHAT_RECORD_ROLE, record)
 
-        assert sidebar._surrounding_record_ids(7, radius=5) == [1, 2, 4, 6, 7, 9, 11, 12, 13, 14, 15]
+        assert sidebar._surrounding_record_ids(7, radius=5) == [1, 2, 4, 6, 7, 9, 11, 12, 13, 14]
         assert sidebar._surrounding_record_ids(5, radius=5) == []
     finally:
         sidebar.deleteLater()
+
+
+def test_sidebar_delayed_scrollbar_update_is_cancelled_on_destruction(monkeypatch):
+    from PyQt6 import sip
+    from PyQt6.QtCore import QEvent
+    from PyQt6.QtTest import QTest
+
+    _app()
+    sidebar = AIChatHistorySidebar(_FakeHistoryStore(total=1))
+    updates = []
+    monkeypatch.setattr(sidebar, "_sync_list_scrollbar_visibility", updates.append)
+    sidebar.eventFilter(sidebar, QEvent(QEvent.Type.Leave))
+    sip.delete(sidebar)
+    QTest.qWait(100)
+    assert updates == []

@@ -390,6 +390,32 @@ class NotesEditorOutlineTests(unittest.TestCase):
         finally:
             owner.deleteLater()
 
+    def test_window_event_filter_tolerates_cleared_owner(self):
+        owner = QWidget()
+        event_filter = _NoteOutlineWindowEventFilter(owner)
+        try:
+            del event_filter._owner
+            handled = event_filter.eventFilter(owner, QEvent(QEvent.Type.WindowStateChange))
+            self.assertFalse(handled)
+        finally:
+            owner.deleteLater()
+
+    def test_window_outline_callback_is_cancelled_when_owner_is_destroyed(self):
+        from PyQt6 import sip
+
+        calls = []
+
+        class _Owner(QWidget):
+            def _sync_note_outline_visibility(self):
+                calls.append("sync")
+
+        owner = _Owner()
+        event_filter = _NoteOutlineWindowEventFilter(owner)
+        event_filter.eventFilter(owner, QEvent(QEvent.Type.WindowStateChange))
+        sip.delete(owner)
+        self.app.processEvents()
+        self.assertEqual(calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()

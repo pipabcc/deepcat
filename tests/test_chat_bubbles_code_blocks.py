@@ -376,24 +376,45 @@ def test_chat_image_widget_downloads_original_bytes(tmp_path, monkeypatch):
     assert target.read_bytes() == widget._image_bytes
 
 
-def test_chat_image_overlay_buttons_show_only_while_hovering():
+def test_chat_image_overlay_buttons_show_only_while_hovering(tmp_path, monkeypatch):
     app = _app()
-    data_url = (
-        "data:image/png;base64,"
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
-        "AAAADUlEQVR42mP8z8BQDwAFgwJ/lZ7x2wAAAABJRU5ErkJggg=="
-    )
-    widget = ChatImageWidget(data_url, "demo")
+    image_path = tmp_path / "hover.png"
+    image = QImage(40, 40, QImage.Format.Format_ARGB32)
+    image.fill(QColor("blue"))
+    assert image.save(str(image_path))
+    widget = ChatImageWidget(image_path.as_uri(), "demo")
+    hovered = False
+    for target in widget._overlay_hover_targets():
+        monkeypatch.setattr(target, "underMouse", lambda: hovered)
+    widget.show()
+    app.processEvents()
+    widget._sync_overlay_visibility()
 
+    assert widget._has_visible_image()
     assert widget._overlay.isHidden()
 
+    hovered = True
     widget.eventFilter(widget._label, QEvent(QEvent.Type.Enter))
     assert widget._overlay.isVisible()
 
+    hovered = False
     widget.eventFilter(widget._label, QEvent(QEvent.Type.Leave))
     app.processEvents()
 
     assert widget._overlay.isHidden()
+    widget.close()
+
+
+def test_chat_bubble_event_filter_tolerates_cleared_child():
+    _app()
+    bubble = ChatBubble("assistant")
+    box = bubble._bubble_box
+    try:
+        del bubble._bubble_box
+        assert not bubble.eventFilter(box, QEvent(QEvent.Type.User))
+    finally:
+        bubble._bubble_box = box
+        bubble.deleteLater()
 
 
 def test_chat_image_event_filter_tolerates_partial_initialization():
@@ -554,20 +575,22 @@ def test_failed_assistant_bubble_context_menu_shows_recovery_actions(monkeypatch
     assert captured["pos"] == menu_pos
 
 
-def test_failed_assistant_bubble_inline_actions_are_buttons_only():
+def test_failed_assistant_bubble_recovery_actions_emit_message_index():
     _app()
     bubble = ChatBubble("assistant")
     bubble.set_msg_index(1)
     bubble.set_content("回答失败：网络超时", is_markdown=False)
 
-    bar = bubble._failure_action_bar
-    assert bar is not None
-    assert "background:transparent" in bar.styleSheet()
-    assert "border:none" in bar.styleSheet()
+    requests = []
+    bubble.regenerate_requested.connect(lambda index: requests.append(("retry", index)))
+    bubble.switch_model_retry_requested.connect(lambda index: requests.append(("switch", index)))
+    bubble.new_round_from_error_requested.connect(lambda index: requests.append(("new_round", index)))
 
-    buttons = [child.text() for child in bar.findChildren(QToolButton)]
-    assert buttons == ["重试", "换模型", "新开一轮"]
-    assert "复制错误" not in buttons
+    bubble._on_regenerate_clicked()
+    bubble._on_switch_model_retry_clicked()
+    bubble._on_new_round_from_error_clicked()
+
+    assert requests == [("retry", 1), ("switch", 1), ("new_round", 1)]
 
 
 def test_bubble_list_relays_image_preview_signal():

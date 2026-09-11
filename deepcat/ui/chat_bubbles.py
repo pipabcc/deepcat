@@ -886,7 +886,7 @@ class ChatImageWidget(QFrame):
         self._overlay.raise_()
 
     def _schedule_overlay_sync(self) -> None:
-        QTimer.singleShot(0, self._sync_overlay_visibility)
+        single_shot_scoped(0, self, self._sync_overlay_visibility)
 
     def _rounded_pixmap(self, pixmap: QPixmap) -> QPixmap:
         if pixmap.isNull():
@@ -2028,7 +2028,10 @@ class ChatBubble(QFrame):
 
     def eventFilter(self, watched, event) -> bool:
         from PyQt6.QtCore import QEvent, QPoint
-        if watched is self._bubble_box:
+        bubble_box = self.__dict__.get("_bubble_box")
+        if bubble_box is None or sip.isdeleted(bubble_box):
+            return False
+        if watched is bubble_box:
             event_type = event.type()
             if event_type == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
                 label = self._text_label_at_left_padding(event.position().toPoint())

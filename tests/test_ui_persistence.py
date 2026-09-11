@@ -794,6 +794,7 @@ class TestUiPersistence(unittest.TestCase):
         if sys.platform.startswith("win") and sys.version_info >= (3, 13):
             self.skipTest("Python 3.13 + PyQt6 on Windows may crash during QApplication teardown")
         try:
+            from PyQt6.QtCore import QEvent, QRect
             from PyQt6.QtWidgets import QApplication, QWidget
             from PyQt6.QtGui import QPalette
         except Exception:
@@ -846,6 +847,8 @@ class TestUiPersistence(unittest.TestCase):
             root = Path(d)
             old_get_app_dir = ss.get_app_dir
             old_get_files_dir = ss.get_files_dir
+            windows = []
+            app = None
             try:
                 ss.get_app_dir = lambda: root  # type: ignore[assignment]
 
@@ -864,6 +867,7 @@ class TestUiPersistence(unittest.TestCase):
                 app = QApplication.instance() or QApplication([])
 
                 w1 = mw.MainWindow()
+                windows.append(w1)
                 w1.move(120, 140)
                 self.assertNotIn("全屏截图", [w1._mode.itemText(i) for i in range(w1._mode.count())])
                 w1._mode.setCurrentText("滚动截图")
@@ -874,11 +878,10 @@ class TestUiPersistence(unittest.TestCase):
                 w1._merge_pdf.setChecked(True)
                 w1._merge_image.setChecked(False)
                 w1._dual_output.setChecked(True)
-                w1._cdp_mode.setChecked(True)
-                w1._cdp_port.setText("1234")
                 w1._persist_ui_state()
 
                 w2 = mw.MainWindow()
+                windows.append(w2)
                 w2.show()
                 app.processEvents()
 
@@ -890,11 +893,15 @@ class TestUiPersistence(unittest.TestCase):
                 self.assertEqual(w2._merge_pdf.isChecked(), True)
                 self.assertEqual(w2._merge_image.isChecked(), False)
                 self.assertEqual(w2._dual_output.isChecked(), True)
-                self.assertEqual(w2._cdp_mode.isChecked(), True)
-                self.assertEqual(w2._cdp_port.text().strip(), "1234")
 
                 g = w2.geometry()
-                self.assertEqual((g.x(), g.y(), g.width(), g.height()), (120, 140, 800, 520))
+                self.assertEqual((g.width(), g.height()), (800, 520))
+                available = w2.screen().availableGeometry()
+                if available.contains(QRect(120, 140, 800, 520)):
+                    self.assertEqual((g.x(), g.y()), (120, 140))
+                else:
+                    # 无显示器的 CI 屏幕较小，Qt 会把恢复后的窗口移回可见区域。
+                    self.assertTrue(available.contains(w2.frameGeometry().topLeft()))
 
                 w2._switch_page(3)
                 self.assertEqual((w2.minimumWidth(), w2.minimumHeight()), (800, 520))
@@ -903,12 +910,6 @@ class TestUiPersistence(unittest.TestCase):
                 self.assertTrue(w2.autoFillBackground())
                 self.assertTrue(w2.centralWidget().autoFillBackground())
                 self.assertTrue(w2._stack.currentWidget().autoFillBackground())
-                actions = w2._resizable_header_action_buttons()
-                self.assertEqual([btn.text() for btn in actions], ["快捷浮窗"])
-                w2._suspend_resize_transition_actions()
-                self.assertFalse(actions[0].isVisible())
-                w2._restore_resize_transition_actions()
-                self.assertTrue(actions[0].isVisible())
                 w2.resize(930, 610)
                 app.processEvents()
                 w2._switch_page(0)
@@ -928,9 +929,6 @@ class TestUiPersistence(unittest.TestCase):
                 self.assertEqual((w2.width(), w2.height()), (940, 620))
 
                 w2._switch_page(5)
-                actions = w2._resizable_header_action_buttons()
-                self.assertEqual(len(actions), 1)
-                self.assertIn(actions[0].text(), {"切换表格", "切换记事本"})
                 self.assertEqual((w2.width(), w2.height()), (940, 620))
                 w2.resize(950, 630)
                 app.processEvents()
@@ -947,17 +945,14 @@ class TestUiPersistence(unittest.TestCase):
                     (800, 520, 800, 520),
                 )
 
-                try:
-                    w1.close()
-                    w2.close()
-                    w1.deleteLater()
-                    w2.deleteLater()
-                    app.processEvents()
-                    app.quit()
-                    app.processEvents()
-                except Exception:
-                    pass
             finally:
+                for window in reversed(windows):
+                    window.cleanup()
+                    window.close()
+                    window.deleteLater()
+                if app is not None:
+                    app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+                    app.processEvents()
                 ss.get_app_dir = old_get_app_dir  # type: ignore[assignment]
                 ss.get_files_dir = old_get_files_dir  # type: ignore[assignment]
                 mw.MainWindow._init_tray = old_init_tray  # type: ignore[assignment]

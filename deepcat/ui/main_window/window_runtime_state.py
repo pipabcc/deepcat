@@ -457,10 +457,15 @@ class WindowRuntimeStateMixin:
                 return
             self._persist_ui_state()
 
+        self._ui_save_timer = QTimer(self)
+        self._ui_save_timer.setSingleShot(True)
+        self._ui_save_timer.timeout.connect(save_now)
+
         def schedule_save() -> None:
             if bool(self._ui_restoring):
                 return
-            QTimer.singleShot(0, save_now)
+            # 复用窗口拥有的定时器，窗口销毁时取消尚未执行的保存回调。
+            self._ui_save_timer.start(0)
 
         if self._mode is not None:
             self._mode.currentIndexChanged.connect(lambda *_: schedule_save())
@@ -497,10 +502,6 @@ class WindowRuntimeStateMixin:
             self._stack.currentChanged.connect(lambda *_: schedule_save())
         if getattr(self, "_table_notes_stack", None) is not None:
             self._table_notes_stack.currentChanged.connect(lambda *_: schedule_save())
-
-        self._ui_save_timer = QTimer(self)
-        self._ui_save_timer.setSingleShot(True)
-        self._ui_save_timer.timeout.connect(save_now)
 
     def _persist_ui_state(self) -> None:
         self._remember_current_resizable_page_size()

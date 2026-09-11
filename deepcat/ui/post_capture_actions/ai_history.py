@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
+from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PyQt6.QtWidgets import (
@@ -34,6 +35,7 @@ from PyQt6.QtWidgets import QWidget, QHBoxLayout, QLabel, QPushButton
 
 from deepcat.ui.post_capture_actions._shared import _AI_CHAT_BATCH_SELECTED_ROLE, _AI_CHAT_GROUP_ROLE, _AI_CHAT_RECORD_ROLE
 from deepcat.ui.post_capture_actions.model_menus import OcrGenericMenuPopup
+from deepcat.ui.timer_scope import single_shot_scoped
 
 
 class AIChatNewButton(QPushButton):
@@ -1402,7 +1404,10 @@ class AIChatHistorySidebar(QWidget):
         return True
 
     def eventFilter(self, obj, event) -> bool:
-        viewport = getattr(self._list, "viewport", lambda: None)()
+        list_widget = self.__dict__.get("_list")
+        if list_widget is None or sip.isdeleted(list_widget):
+            return False
+        viewport = list_widget.viewport()
         if obj in {self, self._list, viewport}:
             if event.type() == QEvent.Type.Enter:
                 self._sync_list_scrollbar_visibility(True)
@@ -1414,7 +1419,7 @@ class AIChatHistorySidebar(QWidget):
                     if item is not None:
                         self._list.viewport().update(self._list.visualItemRect(item))
                     self._list.viewport().unsetCursor()
-                QTimer.singleShot(80, lambda: self._sync_list_scrollbar_visibility(self.underMouse()))
+                single_shot_scoped(80, self, lambda: self._sync_list_scrollbar_visibility(self.underMouse()))
             elif obj is viewport and event.type() == QEvent.Type.MouseMove:
                 self._sync_list_scrollbar_visibility(True)
                 self._update_hovered_row(self._event_pos(event))

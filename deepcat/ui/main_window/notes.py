@@ -6,6 +6,7 @@ import time
 import html
 from pathlib import Path
 from typing import Any, Optional
+from PyQt6 import sip
 from PyQt6.QtCore import Qt, QThread, QRect, QEvent, QPoint, pyqtSignal, QUrl, QMimeData
 from PyQt6.QtGui import QGuiApplication, QColor, QImage, QPixmap, QDesktopServices, QTextCharFormat, QTextCursor, QBrush, QPalette, QMouseEvent
 from PyQt6.QtWidgets import (
@@ -27,6 +28,7 @@ from PyQt6.QtWidgets import QStyledItemDelegate, QStyleOptionButton, QStyleOptio
 
 from deepcat.ui.main_window.compact import _CompactListWindow, _GroupManageDialog, StyledInputDialog, StyledDialog, StyledMessageBox
 from deepcat.ui.main_window.helpers import _note_auto_link_parts
+from deepcat.ui.timer_scope import single_shot_scoped
 
 class _ReturnDownDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
@@ -1546,17 +1548,18 @@ class _NoteOutlineWindowEventFilter(QObject):
         self._owner = owner
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        owner = self._owner
-        if owner is None:
+        # Qt 在销毁子对象时仍可能派发事件，此时 Python 属性可能已被清理。
+        owner = self.__dict__.get("_owner")
+        if owner is None or sip.isdeleted(owner):
             return False
         if event.type() == QEvent.Type.WindowStateChange:
             callback = getattr(owner, "_handle_note_window_state_change", None)
             if callback is None:
                 callback = getattr(owner, "_sync_note_outline_visibility", None)
             if callback is not None:
-                QTimer.singleShot(0, callback)
+                single_shot_scoped(0, owner, callback)
         elif event.type() == QEvent.Type.Show and hasattr(owner, "_sync_note_outline_visibility"):
-            QTimer.singleShot(0, owner._sync_note_outline_visibility)
+            single_shot_scoped(0, owner, owner._sync_note_outline_visibility)
         return False
 
 
