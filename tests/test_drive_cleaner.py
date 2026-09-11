@@ -1,4 +1,6 @@
+import os
 from pathlib import Path
+import time
 
 from deepcat.drive_cleaner import (
     CONFIRM_REQUIRED,
@@ -16,6 +18,9 @@ from deepcat import drive_cleaner
 def _write_bytes(path: Path, size: int, fill: bytes = b"x") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(fill * size)
+    # 保持文件属于“近期”，同时避开 Windows 文件时间戳略领先系统时钟的边界。
+    timestamp = time.time() - 1.0
+    os.utime(path, (timestamp, timestamp))
 
 
 def test_scan_finds_cleanup_large_and_duplicate_files(tmp_path, monkeypatch):
