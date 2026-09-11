@@ -1,0 +1,9 @@
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Document Folder Fold (White) -->
+  <path d="M15 3V6C15 6.6 15.4 7 16 7H19" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Document Outline (Cut at bottom-left) (White) -->
+  <path d="M8 12V5C8 3.9 8.9 3 10 3H15L19 7V17C19 18.1 18.1 19 17 19H13.2" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Magnifying Glass (White) -->
+  <circle cx="10" cy="15" r="3" stroke="#ffffff" stroke-width="1.6"/>
+  <path d="M12.1 17.1L15.5 20.5" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round"/>
+</svg>

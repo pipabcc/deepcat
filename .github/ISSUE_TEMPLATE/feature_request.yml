@@ -1,0 +1,34 @@
+name: "💡 功能建议 (Feature Request)"
+description: 为 DeepCat 提议新的功能、工作流优化或特性改进
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        欢迎为 DeepCat 提供新特性建议！请尽量从真实使用痛点和效率提升角度进行描述。
+  - type: textarea
+    id: problem
+    attributes:
+      label: 解决的痛点或背景需求
+      description: 当前的工作流程遇到了什么阻碍，或者你希望通过什么功能解决？
+      placeholder: 例如：在多显示器环境下经常需要把稍后阅读的卡片固定在副屏...
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: 建议的解决方案或交互设计
+      description: 请描述你理想中该功能的工作方式与交互界面。
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 考虑过的替代方案
+      description: 是否有同类软件的实现方式或你已经尝试过的替代手段？
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: 补充说明
+      description: 原型图、竞品参考截图或任何有助于理解建议的额外信息。

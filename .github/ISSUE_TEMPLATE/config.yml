@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 社区问答与交流 (GitHub Discussions)
+    url: https://github.com/pipabcc/deepcat/discussions
+    about: 欢迎在 Discussions 中提问、分享使用心得或参与日常交流。

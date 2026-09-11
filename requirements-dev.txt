@@ -1,0 +1,7 @@
+-r requirements.txt
+-r requirements-build.txt
+
+pytest>=8.2,<9
+pytest-timeout>=2.3,<3
+black>=24.4,<26
+ruff>=0.5,<1

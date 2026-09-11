@@ -1,0 +1,12 @@
+{
+  "auto_save": true,
+  "auto_start": false,
+  "tray_enabled": false,
+  "tray_start_hidden": false,
+  "theme_mode": "light",
+  "language_mode": "auto",
+  "sidebar_style": "vertical",
+  "update_channel": "beta",
+  "protect_builtin_rules": true,
+  "deleted_builtin_rules": []
+}

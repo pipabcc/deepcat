@@ -1,0 +1,18 @@
+* text=auto
+
+*.py text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.spec text eol=lf
+*.ps1 text eol=crlf
+
+*.ico binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.pdf binary
+*.onnx binary
+models/pp-ocrv6-small/**/*.onnx filter=lfs diff=lfs merge=lfs -text
+models/pp-ocrv6-small/**/inference.json binary
+models/pp-ocrv6-small/**/inference.yml binary

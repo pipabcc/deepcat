@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "name": "PP-OCRv6 Small ONNX",
+  "license": "Apache-2.0",
+  "source": "https://huggingface.co/collections/PaddlePaddle/pp-ocrv6",
+  "models": {
+    "detection": {
+      "repository": "PaddlePaddle/PP-OCRv6_small_det_onnx",
+      "revision": "28fe5895c24fd108c19eb3e8479f4ab385fbfc62"
+    },
+    "recognition": {
+      "repository": "PaddlePaddle/PP-OCRv6_small_rec_onnx",
+      "revision": "b8f84f0b80c529de40b4fbb3544b84fa7233a513"
+    }
+  },
+  "files": [
+    {
+      "path": "detection/inference.onnx",
+      "size": 9880512,
+      "sha256": "d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e"
+    },
+    {
+      "path": "detection/inference.yml",
+      "size": 885,
+      "sha256": "193f435274bf9f0b5f71a929bbfbcf148282df7e633b34e7c373e8f44741b516"
+    },
+    {
+      "path": "detection/inference.json",
+      "size": 229307,
+      "sha256": "89240f689a4a77aad75ef55a8df0a15c8e1d4980a327d17e58f24bbadde5aeab"
+    },
+    {
+      "path": "recognition/inference.onnx",
+      "size": 21159378,
+      "sha256": "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634"
+    },
+    {
+      "path": "recognition/inference.yml",
+      "size": 150579,
+      "sha256": "ab078671bb49f06228eadccd34f1bb501e157f7a047095ffb943ba81512c77d1"
+    },
+    {
+      "path": "recognition/inference.json",
+      "size": 208004,
+      "sha256": "f0bf53c853937a917affdd74467472167727f8ab0f0f7bded01c4a16c27e46e6"
+    }
+  ]
+}

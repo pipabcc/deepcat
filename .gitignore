@@ -1,0 +1,118 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+pytest-cache-files-*/
+
+# Virtual environments and local temp files
+.venv/
+.venv-*/
+venv/
+env/
+.tmp/
+tmp*/
+tmpptz21d10/
+*.tmp
+
+# Build and packaged outputs
+build*/
+build_secure*/
+dist*/
+dist_nuitka*/
+*.spec.bak
+*.exe
+
+# Runtime logs
+logs/
+deepcat/logs/
+deepcat/ui/logs/
+*.log
+
+# User-generated captures and recordings
+files/
+generated-images/
+deepcat/files/
+
+# Local data and heavyweight runtime assets
+data/
+models/*
+!models/pp-ocrv6-small/
+!models/pp-ocrv6-small/**
+models/pp-ocrv6-small/**/.cache/
+tools/
+test_clipboard_db/
+
+# Local user settings and backups
+settings.json
+settings.json.bak
+settings*.bak
+deepcat/settings.json
+deepcat/settings.json.bak
+*.bak
+*.bak*
+*.json.tmp
+.env
+.env.*
+!.env.example
+*.secret
+*.token
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.csr
+*.dmp
+
+# Legacy local copies and backup directories
+long_screenshot*/
+deepcat -*/
+deepcat副本*/
+*副本*
+* - 副本*
+* - 副本 (*)*
+cc-switch-main/
+optimization-report/
+
+# Local agent/editor caches and cleanup archive
+.arts/
+.claude/
+.codeartsdoer/
+.codebuddy/
+_recycle*/
+
+# Local profiling, backup and diagnostic artifacts
+memory_profiles/
+backups/
+*.tracemalloc
+git_diff*.txt
+_tmp_*.py
+.pytest-cache/
+.pytest-tmp/
+.pytest-runs/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+
+# 本地开发工具与运行缓存
+/.agents/
+/skills-lock.json
+.ruff_cache/
+.sentry-native/
+/resource_tool_icons/
+/models/pp-ocrv6-small/.verified.marker.json
+
+# 内部审查材料与临时诊断脚本
+/CODE_REVIEW_REPORT.md
+/LLM_Drive_Cleaner_Plan.md
+/implementation_plan.md
+/polymorphic-splashing-cray.md
+/PROJECT_REVIEW_*.md
+/REMEDIATION_PLAN_*.md
+/REMEDIATION_REPORT_*.md
+/deepcat/scratch_diag.py

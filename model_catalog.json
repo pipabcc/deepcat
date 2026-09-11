@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "model_configs": {
+    "Google翻译": {
+      "base_url": "https://translate.googleapis.com",
+      "model_name": "google-free",
+      "api_key": "",
+      "use_proxy": false,
+      "model_type": "google_free",
+      "provider": "免费翻译"
+    },
+    "DeepLX": {
+      "base_url": "L站用户专属访问https://linux.do/t/topic/111737查看说明",
+      "model_name": "deepLX-free",
+      "api_key": "",
+      "use_proxy": false,
+      "model_type": "deeplx",
+      "provider": "免费翻译"
+    },
+    "gemini-3.5-flash-thinking": {
+      "base_url": "http://127.0.0.1:8081",
+      "model_name": "gemini-3.5-flash-thinking",
+      "api_key": "123456",
+      "use_proxy": false,
+      "model_type": "glm",
+      "provider": "Google Gemini"
+    },
+    "gemini-3.6-flash": {
+      "base_url": "http://127.0.0.1:8081",
+      "model_name": "gemini-3.6-flash",
+      "api_key": "123456",
+      "use_proxy": false,
+      "model_type": "glm",
+      "provider": "Google Gemini"
+    },
+    "gemini-3.7-flash": {
+      "base_url": "http://127.0.0.1:8081",
+      "model_name": "gemini-3.7-flash",
+      "api_key": "123456",
+      "use_proxy": false,
+      "model_type": "glm",
+      "provider": "Google Gemini"
+    },
+    "gemini-3.8-flash": {
+      "base_url": "http://127.0.0.1:8081",
+      "model_name": "gemini-3.8-flash",
+      "api_key": "123456",
+      "use_proxy": false,
+      "model_type": "glm",
+      "provider": "Google Gemini"
+    },
+    "ChatGPT Web": {
+      "base_url": "http://127.0.0.1:8082",
+      "model_name": "gpt-5-3",
+      "api_key": "",
+      "use_proxy": false,
+      "model_type": "chatgpt_web",
+      "provider": "ChatGPT Web"
+    },
+    "腾讯模型MT1.5": {
+      "base_url": "http://127.0.0.1:8080",
+      "model_name": "hy-mt15-1.8b-q4_k_m",
+      "api_key": "sk-1234",
+      "use_proxy": false,
+      "model_type": "glm",
+      "provider": "腾讯混元"
+    },
+    "腾讯模型MT2": {
+      "base_url": "http://127.0.0.1:8080",
+      "model_name": "hy-mt2-1.8b-q4_k_m",
+      "api_key": "sk-1234",
+      "use_proxy": false,
+      "model_type": "glm",
+      "provider": "腾讯混元"
+    }
+  }
+}

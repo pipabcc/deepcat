@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" shape-rendering="geometricPrecision">
+  <g transform="translate(12 12) scale(0.82) translate(-12 -12)">
+    <path
+      d="M10.14 5.05L10.88 2.87L13.12 2.87L13.86 5.05L15.60 5.76L17.66 4.75L19.25 6.34L18.24 8.40L18.95 10.14L21.13 10.88L21.13 13.12L18.95 13.86L18.24 15.60L19.25 17.66L17.66 19.25L15.60 18.24L13.86 18.95L13.12 21.13L10.88 21.13L10.14 18.95L8.40 18.24L6.34 19.25L4.75 17.66L5.76 15.60L5.05 13.86L2.87 13.12L2.87 10.88L5.05 10.14L5.76 8.40L4.75 6.34L6.34 4.75L8.40 5.76Z"
+      stroke="#2F3D56"
+      stroke-width="1.6"
+      stroke-linejoin="miter"
+      stroke-linecap="butt"
+      vector-effect="non-scaling-stroke"
+    />
+    <circle
+      cx="12"
+      cy="12"
+      r="3"
+      stroke="#2F3D56"
+      stroke-width="1.6"
+      vector-effect="non-scaling-stroke"
+    />
+  </g>
+</svg>

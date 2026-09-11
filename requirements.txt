@@ -1,0 +1,26 @@
+mss>=9.0.1,<11
+opencv-python==4.10.0.84
+opencv-contrib-python==4.10.0.84
+pillow>=10,<12
+pyautogui>=0.9.54,<1
+pynput>=1.7.6,<2
+numpy>=1.24,<2.4
+PyQt6>=6.5,<7
+websockets>=12,<16
+python-socks[asyncio]>=2.4,<3
+pypdf>=4.2,<6
+rapidocr-onnxruntime>=1.2.3,<2
+paddleocr==3.7.0
+paddlex[ocr-core]==3.7.2
+onnxruntime==1.20.1
+httpx>=0.24,<1
+socksio>=1,<2
+curl_cffi>=0.7,<1
+requests>=2.31,<3
+PySocks>=1.7.1,<2
+# Windows 平台系统交互依赖：剪贴板监听、前台进程名获取、UIA 链接探测（稍后阅读）均依赖以下包。
+# 此前未声明，导致全新 .venv 安装后打包会缺失这些模块，出现剪贴板无记录、稍后阅读获取不到链接等问题。
+pywin32>=306,<313
+psutil>=5.9,<8
+comtypes>=1.4,<2
+pywinauto>=0.6.8,<1

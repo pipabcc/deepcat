@@ -1,0 +1,67 @@
+name: "🐛 Bug 报告 (Bug Report)"
+description: 提交程序错误或异常崩溃问题
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈问题！在提交前，请先搜索已有的 Issue，确认没有重复报告。
+        ⚠️ **请勿在报告中包含任何敏感个人数据、API 密钥或私密截图**。
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 请清晰、简明地描述该 Bug 是什么。
+      placeholder: 例如：使用特定快捷键执行滚动截图时，程序未开始滚动即自动终止...
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 复现步骤
+      description: 请详细说明重现该问题的步骤。
+      placeholder: |
+        1. 启动 DeepCat 托盘程序
+        2. 按下 F2 开启滚动截图
+        3. 拖选目标区域并开始滚动
+        4. 观察到界面无响应
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+      description: 正常情况下应该发生什么？
+      placeholder: 程序应当顺畅向下滚动并拼接长图。
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 运行日志或错误堆栈
+      description: 如果可能，请附上控制台输出或 `logs/` 目录中的异常堆栈（脱敏处理后）。
+      render: shell
+  - type: dropdown
+    id: run_mode
+    attributes:
+      label: 运行方式
+      description: 您使用的是源码还是预编译 Release？
+      options:
+        - "预编译免安装 Release (deepcat.exe)"
+        - "Python 源码运行 (python main.py --gui)"
+        - "自定义 PyInstaller / Nuitka 打包产物"
+    validations:
+      required: true
+  - type: input
+    id: os_version
+    attributes:
+      label: 操作系统与版本
+      placeholder: 例如：Windows 11 23H2 (x64)
+    validations:
+      required: true
+  - type: input
+    id: python_version
+    attributes:
+      label: Python 版本（源码运行者填写）
+      placeholder: 例如：Python 3.11.9

@@ -1,0 +1,82 @@
+[project]
+name = "deepcat"
+version = "1.0.0"
+description = "Windows 常驻托盘截图、OCR、翻译与效率工具"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = { text = "GPL-3.0-or-later" }
+dependencies = [
+    "mss>=9.0.1,<11",
+    "opencv-python==4.10.0.84",
+    "opencv-contrib-python==4.10.0.84",
+    "pillow>=10,<12",
+    "pyautogui>=0.9.54,<1",
+    "pynput>=1.7.6,<2",
+    "numpy>=1.24,<2.4",
+    "PyQt6>=6.5,<7",
+    "websockets>=12,<16",
+    "python-socks[asyncio]>=2.4,<3",
+    "pypdf>=4.2,<6",
+    "rapidocr-onnxruntime>=1.2.3,<2",
+    "paddleocr==3.7.0",
+    "paddlex[ocr-core]==3.7.2",
+    "onnxruntime==1.20.1",
+    "httpx>=0.24,<1",
+    "socksio>=1,<2",
+    "curl_cffi>=0.7,<1",
+    "requests>=2.31,<3",
+    "PySocks>=1.7.1,<2",
+    "pywin32>=306,<313",
+    "psutil>=5.9,<8",
+    "comtypes>=1.4,<2",
+    "pywinauto>=0.6.8,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2,<9",
+    "pytest-timeout>=2.3,<3",
+    "black>=24.4,<26",
+    "ruff>=0.5,<1",
+]
+build = [
+    "pyinstaller>=6.6,<7",
+    "nuitka>=2.7,<3",
+    "ordered-set>=4.1,<5",
+    "zstandard>=0.23,<1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [
+    ".git",
+    ".venv",
+    ".venv-*",
+    "_recycle*",
+    "backups",
+    "build",
+    "build_secure",
+    "dist",
+    "dist_nuitka",
+    "memory_profiles",
+]
+addopts = "--strict-markers --durations=15"
+cache_dir = ".pytest-cache"
+markers = [
+    "unit: 不依赖真实 GUI 生命周期或外部服务的快速单元测试",
+    "gui: 涉及 PyQt 控件、窗口、事件循环或 DPI 的测试",
+    "integration: 跨模块、HTTP 服务、数据库、备份或更新器集成测试",
+    "network: 需要真实网络访问的测试，默认 CI 不执行",
+    "slow: 预计执行时间较长的测试",
+]
+
+[tool.black]
+line-length = 120
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82"]

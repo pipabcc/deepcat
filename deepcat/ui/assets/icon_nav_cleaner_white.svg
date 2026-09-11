@@ -1,0 +1,8 @@
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Brush Socket (Dome) and Bristles (Trapezoid) -->
+  <path d="M9.3 10.3A3.1 3.1 0 0 1 13.7 14.7L11.7 18.7L5.3 12.3L9.3 10.3Z" stroke="#ffffff" stroke-width="1.6" stroke-linejoin="round"/>
+  <!-- Divider line -->
+  <path d="M9.3 10.3L13.7 14.7" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round"/>
+  <!-- Handle -->
+  <path d="M13.6 10.4L21 3" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round"/>
+</svg>
