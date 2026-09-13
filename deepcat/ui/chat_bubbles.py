@@ -41,6 +41,8 @@ from PyQt6.QtWidgets import (
 )
 
 from deepcat.ui.markdown_renderer import MarkdownRenderer
+from deepcat.ui.markdown_images import has_markdown_image, iter_markdown_images
+from deepcat.ui.chat_image_loader import ChatImageLoader, decode_thumbnail
 from deepcat.ui.popup_behavior import set_disable_global_tooltip
 from deepcat.ui.timer_scope import single_shot_scoped
 from deepcat.utils.logger import get_log_dir, get_logger
@@ -98,12 +100,6 @@ _CHAT_CARD_DRAG_MIME = "application/x-deepcat-chat-card-id"
 _LONG_ANSWER_COLLAPSE_CHARS = 12000
 _LONG_ANSWER_PREVIEW_CHARS = 7000
 _IMAGE_PREVIEW_LINK_RE = re.compile(r"📎\s*\[图片:\s*([^\]]+)\]\((deepcat-image-preview:[^)\s]+)\)")
-_DATA_IMAGE_MARKDOWN_RE = re.compile(
-    r"!?\[([^\]]*)\]\("
-    r"((?:data:image/(?:png|jpe?g|webp|gif|bmp|avif);base64,[A-Za-z0-9+/=]+|file://[^)]+?\.(?:png|jpe?g|webp|gif|bmp|avif)(?:[?#][^)]*)?|[A-Za-z]:[\\/][^)]+?\.(?:png|jpe?g|webp|gif|bmp|avif)))"
-    r"\)",
-    re.IGNORECASE,
-)
 _IMAGE_PREVIEW_LINK_STYLE = (
     "color:#2563eb; text-decoration:none;"
 )
@@ -633,12 +629,19 @@ class ChatImageWidget(QFrame):
         super().__init__(parent)
         self._data_url = str(image_source or "")
         self._alt = str(alt or "generated image").strip() or "generated image"
-        self._mime_type, self._image_bytes = self._decode_image_source(self._data_url)
+        self._remote_image = self._data_url.lower().startswith(("http://", "https://"))
+        self._loading_image = self._remote_image
+        self._image_error = ""
+        self._image_loader: ChatImageLoader | None = None
+        self._mime_type, self._image_bytes = (
+            ("image/png", b"") if self._remote_image else self._decode_image_source(self._data_url)
+        )
         self._pixmap = QPixmap()
         self._display_pixmap = QPixmap()
         self.setSizePolicy(QSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed))
         if self._image_bytes:
-            self._pixmap.loadFromData(self._image_bytes)
+            _mime, thumbnail = decode_thumbnail(self._image_bytes)
+            self._pixmap = QPixmap.fromImage(thumbnail)
 
         self.setObjectName("ChatImageWidget")
         self.setSizePolicy(QSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed))
@@ -675,6 +678,36 @@ class ChatImageWidget(QFrame):
         self._overlay.hide()
         self._label.installEventFilter(self)
 
+        self._refresh_pixmap()
+        if self._remote_image:
+            single_shot_scoped(0, self, self._load_remote_image)
+
+    def _load_remote_image(self) -> None:
+        if self._image_loader is not None:
+            self._image_loader.cancel()
+            self._image_loader.deleteLater()
+        self._loading_image = True
+        self._image_error = ""
+        self._refresh_pixmap()
+        self._image_loader = ChatImageLoader(self)
+        self._image_loader.loaded.connect(self._remote_image_loaded)
+        self._image_loader.failed.connect(self._remote_image_failed)
+        self._image_loader.load(self._data_url)
+
+    def _remote_image_loaded(self, data: bytes, mime: str, thumbnail: QImage) -> None:
+        self._loading_image = False
+        self._image_error = ""
+        self._image_bytes = data
+        self._mime_type = mime
+        self._pixmap = QPixmap.fromImage(thumbnail)
+        self._label.setToolTip("点击查看原图")
+        self._label.setStyleSheet("QLabel#ChatImageLabel { background: transparent; border: none; padding: 0; }")
+        self._refresh_pixmap()
+
+    def _remote_image_failed(self, message: str) -> None:
+        self._loading_image = False
+        self._image_error = message
+        self._label.setToolTip(message + "，点击重试")
         self._refresh_pixmap()
 
     @staticmethod
@@ -934,7 +967,11 @@ class ChatImageWidget(QFrame):
                 len(self._image_bytes or b""),
                 self._mime_type,
             )
-            if self._image_bytes and self._mime_type == "image/avif":
+            if getattr(self, "_loading_image", False):
+                self._label.setText("图片加载中…")
+            elif getattr(self, "_image_error", ""):
+                self._label.setText("图片加载失败，点击重试")
+            elif self._image_bytes and self._mime_type == "image/avif":
                 self._label.setText("图片格式暂不支持预览，可右键下载原图")
             else:
                 self._label.setText("图片加载失败，可右键下载原图")
@@ -1084,7 +1121,7 @@ class ChatImageWidget(QFrame):
             QTimer.singleShot(80, _reposition_panel)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.LeftButton and self._image_bytes:
+        if event.button() == Qt.MouseButton.LeftButton and (self._image_bytes or self._remote_image):
             self._open_original_image()
             event.accept()
             return
@@ -1130,7 +1167,11 @@ class ChatImageWidget(QFrame):
         popup.show_at_pos(self._label.mapToGlobal(pos))
 
     def _open_original_image(self) -> None:
-        path = self._local_image_path(self._data_url)
+        if self._remote_image and not self._image_bytes:
+            if not self._loading_image:
+                self._load_remote_image()
+            return
+        path = None if self._remote_image else self._local_image_path(self._data_url)
         if path is None and self._image_bytes:
             digest = hashlib.sha256(self._image_bytes).hexdigest()[:16]
             path = Path(tempfile.gettempdir()) / f"deepcat_generated_preview_{digest}{self._extension()}"
@@ -1141,7 +1182,11 @@ class ChatImageWidget(QFrame):
                 return
         if path is None:
             return
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        from deepcat.ui.main_window import ImagePreviewDialog
+
+        dialog = ImagePreviewDialog(str(path), parent=self.window())
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dialog.exec()
 
     def _download_image(self) -> None:
         safe_name = re.sub(r"[\\/:*?\"<>|]+", "_", self._alt).strip(" .") or "generated-image"
@@ -1163,9 +1208,6 @@ class ChatImageWidget(QFrame):
         try:
             clipboard = QGuiApplication.clipboard()
             if clipboard is None:
-                return
-            if not self._pixmap.isNull():
-                clipboard.setPixmap(self._pixmap)
                 return
             image = QImage()
             if image.loadFromData(self._image_bytes):
@@ -1538,18 +1580,18 @@ class ChatBubble(QFrame):
 
         def add_markdown_and_images(markdown_text: str) -> None:
             last_end = 0
-            for match in _DATA_IMAGE_MARKDOWN_RE.finditer(markdown_text):
-                before = markdown_text[last_end:match.start()]
+            for image in iter_markdown_images(markdown_text):
+                before = markdown_text[last_end:image.start]
                 if before.strip():
                     normalized.append({"type": "markdown", "text": before, "lang": ""})
                 normalized.append(
                     {
                         "type": "image",
-                        "text": match.group(2),
-                        "lang": match.group(1) or "generated image",
+                        "text": image.source,
+                        "lang": image.alt or "generated image",
                     }
                 )
-                last_end = match.end()
+                last_end = image.end
             tail = markdown_text[last_end:]
             if tail.strip():
                 normalized.append({"type": "markdown", "text": tail, "lang": ""})
@@ -2236,7 +2278,7 @@ class ChatBubble(QFrame):
                 bool(is_markdown),
                 bool(streaming),
                 len(raw_text),
-                bool(_DATA_IMAGE_MARKDOWN_RE.search(raw_text)),
+                has_markdown_image(raw_text),
                 _preview_log_text(raw_text),
             )
         render_key = (raw_text, bool(is_markdown), bool(streaming), bool(getattr(self, "_long_answer_expanded", False)))
@@ -2254,8 +2296,8 @@ class ChatBubble(QFrame):
         if is_markdown:
             segments = MarkdownRenderer.split_code_segments(render_source)
             has_code_segment = any(str(segment.get("type")) == "code" for segment in segments)
-            has_data_image = bool(_DATA_IMAGE_MARKDOWN_RE.search(render_source))
-            if has_code_segment or has_data_image:
+            has_image = has_markdown_image(render_source)
+            if has_code_segment or has_image:
                 self._render_markdown_with_code_widgets(segments, streaming=bool(streaming))
             else:
                 render_text = self._prepare_follow_up_markdown(render_source)
@@ -2960,7 +3002,7 @@ class BubbleListView(QScrollArea):
                 or len(raw_text) > 600
                 or "```" in raw_text
                 or "~~~" in raw_text
-                or bool(_DATA_IMAGE_MARKDOWN_RE.search(raw_text))
+                or has_markdown_image(raw_text)
             )
         )
         if force_wide:
@@ -3299,7 +3341,7 @@ class BubbleListView(QScrollArea):
                 BubbleListView._apply_stream_layout_atomically(self, keep_bottom=follow_bottom)
             else:
                 self._schedule_layout_refresh(keep_bottom=follow_bottom, delay_ms=0)
-            if bool(_DATA_IMAGE_MARKDOWN_RE.search(str(text or ""))) and not bool(streaming):
+            if has_markdown_image(str(text or "")) and not bool(streaming):
                 self._schedule_media_layout_stabilization()
             return True
         finally:
@@ -4025,7 +4067,7 @@ class BubbleListView(QScrollArea):
                             len(str(msg.get("content", "") or "")),
                             len(display_content),
                             len(content),
-                            bool(_DATA_IMAGE_MARKDOWN_RE.search(content)),
+                            has_markdown_image(content),
                             _preview_log_text(content),
                         )
                 except Exception:

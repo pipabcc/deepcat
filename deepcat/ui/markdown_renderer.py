@@ -18,6 +18,7 @@ import re
 from typing import Optional
 
 from deepcat.ui.latex_renderer import LatexRenderer
+from deepcat.ui.markdown_images import MarkdownImage, replace_markdown_images
 
 # ---- 内联样式常量（沿用 post_capture_actions 既有视觉风格）----
 _P_STYLE = (
@@ -73,12 +74,6 @@ _LOOSE_HEADING_RE = re.compile(r"^(\s*)(#{1,6})([^#\s].*)$")
 _ATTACHED_HR_RE = re.compile(r"^\s*([-*_])\1{5,}\s+(.+\S)\s*$")
 
 # ---- 行内识别（在已 HTML 转义的文本上运行）----
-_IMAGE_RE = re.compile(
-    r"!\[([^\]]*)\]\("
-    r"((?:data:image/(?:png|jpe?g|webp|gif|bmp|avif);base64,[A-Za-z0-9+/=]+|file://[^)]+?\.(?:png|jpe?g|webp|gif|bmp|avif)(?:[?#][^)]*)?|[A-Za-z]:[\\/][^)]+?\.(?:png|jpe?g|webp|gif|bmp|avif)))"
-    r"\)",
-    re.IGNORECASE,
-)
 _LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
 _CODE_INLINE_RE = re.compile(r"`([^`]+)`")
 _BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
@@ -86,10 +81,9 @@ _DEL_RE = re.compile(r"~~(.+?)~~")
 # 单星斜体：两侧不能再是星号，避免吃掉粗体残留；故意不支持 ``_`` 斜体，避免 snake_case 误伤
 _ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)([^*\n]+?)\*(?!\*)")
 _URL_OK_RE = re.compile(r"^(?:https?://|mailto:|deepcat-image-preview:)", re.IGNORECASE)
-_DATA_IMAGE_OK_RE = re.compile(r"^data:image/(?:png|jpe?g|webp|gif|bmp|avif);base64,[A-Za-z0-9+/=]+$", re.IGNORECASE)
-_FILE_IMAGE_OK_RE = re.compile(r"^(?:file://[^)]+?\.(?:png|jpe?g|webp|gif|bmp|avif)(?:[?#][^)]*)?|[A-Za-z]:[\\/][^)]+?\.(?:png|jpe?g|webp|gif|bmp|avif))$", re.IGNORECASE)
 
 _CODE_TOKEN_RE = re.compile(r"\x00C(\d+)\x00")
+_IMAGE_TOKEN_RE = re.compile(r"\x00I(\d+)\x00")
 _MATH_TOKEN_RE = re.compile(r"\x00M(\d+)\x00")
 _CITATION_MARKER_RE = re.compile(r"\ue200cite\ue202([^\ue201]+)\ue201")
 _MANGLED_CITATION_MARKER_RE = re.compile(r"(?:■|\u25a0)?cite(?:☆|\u2606)([a-zA-Z0-9☆\u2606]+)(?:↩|\u21a9)?")
@@ -559,6 +553,7 @@ def _render_inline(text: str) -> str:
     # 1) 抽出行内代码占位，避免其内部被其它规则二次处理
     codes: list[str] = []
     maths: list[str] = []
+    images: list[MarkdownImage] = []
 
     def _stash(m: "re.Match[str]") -> str:
         codes.append(m.group(1))
@@ -567,23 +562,27 @@ def _render_inline(text: str) -> str:
     tmp = _CODE_INLINE_RE.sub(_stash, text)
     tmp = _stash_inline_math(tmp, maths)
 
+    def stash_image(image: MarkdownImage) -> str:
+        images.append(image)
+        return f"\x00I{len(images) - 1}\x00"
+
+    tmp = replace_markdown_images(tmp, stash_image)
+
     # 2) 整体 HTML 转义（控制符不会泄漏成标签）
     tmp = html.escape(tmp, quote=False)
 
     # 3) 图片与链接（白名单协议，否则按字面）
     def _image(m: "re.Match[str]") -> str:
-        alt = m.group(1)
-        url = m.group(2).replace("&amp;", "&")
-        if not (_DATA_IMAGE_OK_RE.match(url) or _FILE_IMAGE_OK_RE.match(url)):
-            return m.group(0)
-        safe_alt = html.escape(alt or "generated image", quote=True)
-        safe_url = html.escape(url, quote=True)
+        index = int(m.group(1))
+        if not 0 <= index < len(images):
+            return ""
+        image = images[index]
+        safe_alt = html.escape(image.alt or "generated image", quote=True)
+        safe_url = html.escape(image.source, quote=True)
         return (
             f'<br><img src="{safe_url}" alt="{safe_alt}" '
             'width="640" style="max-width:640px; margin:6px 0; border-radius:8px;">'
         )
-
-    tmp = _IMAGE_RE.sub(_image, tmp)
 
     def _link(m: "re.Match[str]") -> str:
         label = m.group(1)
@@ -611,6 +610,7 @@ def _render_inline(text: str) -> str:
         return ""
 
     tmp = _MATH_TOKEN_RE.sub(_unstash_math, tmp)
+    tmp = _IMAGE_TOKEN_RE.sub(_image, tmp)
 
     # 5) 还原行内代码（内容转义后包 <code>）
     def _unstash(m: "re.Match[str]") -> str:

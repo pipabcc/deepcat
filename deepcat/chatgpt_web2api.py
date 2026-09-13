@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import errno
 import hashlib
 import inspect
@@ -24,6 +25,8 @@ from urllib.parse import parse_qs, unquote, unquote_to_bytes, urlparse
 import requests
 
 from deepcat.utils.logger import get_logger
+from deepcat.chatgpt_models import CHATGPT_WEB_TEXT_MODELS, DEFAULT_CHATGPT_WEB_MODEL
+from deepcat.chatgpt_transport import acquire_session
 
 try:
     from curl_cffi import requests as curl_requests
@@ -50,9 +53,10 @@ if CurlBaseError is not None:
 NETWORK_REQUEST_EXCEPTIONS: tuple[type[BaseException], ...] = tuple(dict.fromkeys(NETWORK_REQUEST_EXCEPTION_TYPES))
 
 
-DEFAULT_MODEL = "gpt-5-5-thinking"
+DEFAULT_MODEL = DEFAULT_CHATGPT_WEB_MODEL
 CHATGPT_WEB_IMAGE_MODELS = {
     "gpt-image-2",
+    "gpt-image-2.5",
     "codex-gpt-image-2",
     "plus-codex-gpt-image-2",
     "team-codex-gpt-image-2",
@@ -112,75 +116,18 @@ SENTINEL_JSON_TOKEN_FIELDS = {
 
 
 CHATGPT_WEB_MODELS: list[dict[str, Any]] = [
-    {
-        "id": "gpt-5-3",
-        "name": "GPT-5.3",
-        "max_tokens": 34834,
-        "context_window": 34834,
-        "reasoning_type": "auto",
-        "reasoning": False,
-    },
-    {
-        "id": "gpt-5-2",
-        "name": "GPT-5.2",
-        "max_tokens": 25384,
-        "context_window": 25384,
-        "reasoning_type": "auto",
-        "reasoning": False,
-    },
-    {
-        "id": "gpt-5-1",
-        "name": "GPT-5.1",
-        "max_tokens": 35815,
-        "context_window": 35815,
-        "reasoning_type": "auto",
-        "reasoning": False,
-    },
-    {
-        "id": "gpt-5",
-        "name": "GPT-5",
-        "max_tokens": 34815,
-        "context_window": 34815,
-        "reasoning_type": "auto",
-        "reasoning": False,
-    },
-    {
-        "id": "gpt-5-mini",
-        "name": "GPT-5 mini",
-        "max_tokens": 32767,
-        "context_window": 32767,
-        "reasoning_type": "none",
-        "reasoning": False,
-    },
-    {
-        "id": "gpt-5-3-mini",
-        "name": "GPT-5.3 Mini",
-        "max_tokens": 34834,
-        "context_window": 34834,
-        "reasoning_type": "none",
-        "reasoning": False,
-    },
-    {
-        "id": "gpt-5-5-thinking",
-        "name": "GPT-5.5 Thinking",
-        "max_tokens": 262144,
-        "context_window": 262144,
-        "reasoning_type": "reasoning",
-        "reasoning": True,
-    },
-    {
-        "id": "auto",
-        "name": "Auto",
-        "max_tokens": 34834,
-        "context_window": 34834,
-        "reasoning_type": "auto",
-        "reasoning": False,
-    },
+    *CHATGPT_WEB_TEXT_MODELS,
     {
         "id": "gpt-image-2",
         "name": "GPT Image 2",
         "max_tokens": 4096,
         "context_window": 32768,
+        "reasoning_type": "image",
+        "reasoning": False,
+    },
+    {
+        "id": "gpt-image-2.5",
+        "name": "GPT Image 2.5",
         "reasoning_type": "image",
         "reasoning": False,
     },
@@ -196,6 +143,9 @@ CHATGPT_WEB_MODELS: list[dict[str, Any]] = [
 
 
 MODEL_ALIASES = {
+    "gpt5.6": "gpt-5-6",
+    "gpt-5.6": "gpt-5-6",
+    "gpt6": "gpt-6",
     "gpt-4": DEFAULT_MODEL,
     "gpt-4o": DEFAULT_MODEL,
     "chatgpt-4o-latest": DEFAULT_MODEL,
@@ -253,7 +203,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
 CONFIG = dict(DEFAULT_CONFIG)
 
-SERVICE_BUILD = "chatgpt_web2api_images_original_v3"
+SERVICE_BUILD = "chatgpt_web2api_images25_v8"
 
 # ---------------------------------------------------------------------------
 # Sentinel / PoW / Turnstile 验证相关常量
@@ -275,6 +225,17 @@ _bootstrap_script_sources: list[str] = []
 _bootstrap_data_build: str = ""
 _bootstrap_timestamp: float = 0.0
 _BOOTSTRAP_TTL_SEC = 600  # 10 分钟缓存有效期
+
+_sentinel_prefetch_lock = threading.Lock()
+_sentinel_prefetch: dict[str, tuple[float, dict[str, str]]] = {}
+_sentinel_prefetch_inflight: dict[str, int] = {}
+_sentinel_prefetch_slots = threading.BoundedSemaphore(4)
+_sentinel_prefetch_generation = 0
+_SENTINEL_PREFETCH_TTL_SEC = 60.0
+_PER_TURN_HEADER_NAMES = frozenset({
+    "openai-sentinel-chat-requirements-token", "openai-sentinel-proof-token",
+    "openai-sentinel-turnstile-token", "openai-sentinel-so-token", "x-conduit-token",
+})
 
 
 # ---------------------------------------------------------------------------
@@ -433,14 +394,12 @@ def openai_model_list() -> list[dict[str, Any]]:
         {
             "id": str(model["id"]),
             "object": "model",
-            "created": 1700000000,
+            "created": 0,
             "owned_by": "chatgpt-web",
             "metadata": {
-                "name": str(model["name"]),
-                "max_tokens": int(model["max_tokens"]),
-                "context_window": int(model["context_window"]),
-                "reasoning_type": str(model["reasoning_type"]),
-                "reasoning": bool(model["reasoning"]),
+                key: model[key]
+                for key in ("name", "max_tokens", "context_window", "reasoning_type", "reasoning")
+                if key in model
             },
         }
         for model in CHATGPT_WEB_MODELS
@@ -745,7 +704,8 @@ def make_session(config: dict[str, Any], auth: ChatGPTWebAuth) -> Any:
     base_url = str(config.get("base_url") or "https://chatgpt.com").rstrip("/")
     if HAS_CURL_CFFI and curl_requests is not None:
         try:
-            session = curl_requests.Session(impersonate="chrome120")
+            # 连接池保证一次只有一个请求借用，固定 curl 句柄可跨工作线程复用连接。
+            session = curl_requests.Session(impersonate="chrome120", use_thread_local_curl=False)
         except TypeError:
             session = curl_requests.Session()
     else:
@@ -803,11 +763,45 @@ def get_session_info(
         data = resp.json()
     except ValueError as exc:
         return None, access_token, f"session endpoint returned non-json: {exc}"
+    if not isinstance(data, dict):
+        return None, access_token, "session endpoint returned a non-object JSON value"
     token = data.get("accessToken") or access_token
     user = data.get("user") if isinstance(data, dict) else None
     if not token and not user:
         return None, token, "session endpoint returned no user/accessToken"
     return data, token, ""
+
+
+def _upstream_state_key(config: dict[str, Any], auth: ChatGPTWebAuth) -> str:
+    identity = {
+        "base_url": str(config.get("base_url") or "https://chatgpt.com").rstrip("/"),
+        "proxy": _normalize_proxy(str(config.get("proxy") or "")),
+        "cookie": auth.cookie,
+        "access_token": auth.access_token,
+        "device_id": auth.device_id,
+        "protocol_headers": auth.protocol_headers,
+        "user_agent": auth.user_agent or config.get("user_agent") or DEFAULT_CONFIG["user_agent"],
+    }
+    return hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def _acquire_authenticated_session(
+    config: dict[str, Any], auth: ChatGPTWebAuth,
+) -> tuple[Any, dict[str, Any] | None, str | None]:
+    key = _upstream_state_key(config, auth)
+    session = acquire_session(key, lambda: make_session(config, auth))
+    try:
+        result = session.cached_auth()
+        if result is None:
+            result = get_session_info(session, config, auth.access_token)
+            session.remember_auth(result)
+        session_info, access_token, auth_error = result
+        if not session_info and not access_token:
+            raise ChatGPTWebError(f"ChatGPT 登录态校验失败: {auth_error or '未取得会话信息'}")
+        return session, session_info, access_token
+    except BaseException:
+        session.close()
+        raise
 
 
 def _append_cookie_if_missing(cookie_header: str, name: str, value: str) -> str:
@@ -1513,21 +1507,120 @@ def _legacy_warmup_chat_requirements(
         _merge_dynamic_headers_from_response(dynamic_headers, resp)
 
 
+def _sentinel_state_key(config: dict[str, Any], access_token: str | None, device_id: str) -> str | None:
+    if not config.get("api_key") or not access_token:
+        return None
+    if not _request_options_bool(config, "enable_sentinel_prefetch", default=True):
+        return None
+    auth = parse_auth_value(str(config["api_key"]))
+    identity = [_upstream_state_key(config, auth), access_token, device_id]
+    return hashlib.sha256(json.dumps(identity, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def _sentinel_prefetch_store(key: str, headers: dict[str, str], *, generation: int | None = None) -> None:
+    tokens = {name: value for name, value in headers.items() if name.lower() in _PER_TURN_HEADER_NAMES}
+    if not tokens.get("openai-sentinel-chat-requirements-token"):
+        return
+    with _sentinel_prefetch_lock:
+        if generation is not None and generation != _sentinel_prefetch_generation:
+            return
+        now = time.monotonic()
+        for old_key, (expires_at, _headers) in list(_sentinel_prefetch.items()):
+            if expires_at <= now:
+                _sentinel_prefetch.pop(old_key, None)
+        _sentinel_prefetch[key] = (now + _SENTINEL_PREFETCH_TTL_SEC, tokens)
+        while len(_sentinel_prefetch) > 8:
+            _sentinel_prefetch.pop(next(iter(_sentinel_prefetch)))
+
+
+def clear_sentinel_prefetch() -> None:
+    global _sentinel_prefetch_generation
+    with _sentinel_prefetch_lock:
+        _sentinel_prefetch_generation += 1
+        _sentinel_prefetch.clear()
+        _sentinel_prefetch_inflight.clear()
+
+
+def _prefetch_sentinel_async(
+    session: Any, config: dict[str, Any], access_token: str | None,
+    device_id: str, dynamic_headers: dict[str, str],
+) -> None:
+    key = _sentinel_state_key(config, access_token, device_id)
+    if key is None:
+        return
+    with _sentinel_prefetch_lock:
+        cached = _sentinel_prefetch.get(key)
+        if (cached and cached[0] > time.monotonic()) or key in _sentinel_prefetch_inflight:
+            return
+        if len(_sentinel_prefetch_inflight) >= 4:
+            return
+        if not _sentinel_prefetch_slots.acquire(blocking=False):
+            return
+        generation = _sentinel_prefetch_generation
+        _sentinel_prefetch_inflight[key] = generation
+    config_snapshot = dict(config)
+    session_headers = dict(getattr(session, "headers", {}) or {})
+    next_headers = {name: value for name, value in dynamic_headers.items() if name.lower() not in _PER_TURN_HEADER_NAMES}
+
+    def prepare_next() -> None:
+        background_session = None
+        try:
+            auth = parse_auth_value(str(config_snapshot["api_key"]))
+            background_session = make_session(config_snapshot, auth)
+            background_session.headers.update(session_headers)
+            if _fetch_sentinel_token(background_session, config_snapshot, access_token, device_id, next_headers):
+                _sentinel_prefetch_store(key, next_headers, generation=generation)
+        except Exception:
+            # 后台准备失败不影响当前回答，下一次请求仍可正常执行同步校验。
+            _api_logger.debug("ChatGPT Web 下一次请求预热失败，将在需要时重新校验")
+        finally:
+            try:
+                if background_session is not None:
+                    background_session.close()
+            finally:
+                with _sentinel_prefetch_lock:
+                    if _sentinel_prefetch_inflight.get(key) == generation:
+                        _sentinel_prefetch_inflight.pop(key, None)
+                _sentinel_prefetch_slots.release()
+
+    try:
+        threading.Thread(target=prepare_next, name="chatgpt-next-request", daemon=True).start()
+    except RuntimeError:
+        with _sentinel_prefetch_lock:
+            if _sentinel_prefetch_inflight.get(key) == generation:
+                _sentinel_prefetch_inflight.pop(key, None)
+        _sentinel_prefetch_slots.release()
+        _api_logger.debug("ChatGPT Web 后台预热线程未启动，将在需要时重新校验")
+
+
 def warmup_chat_requirements(
     session: Any,
     config: dict[str, Any],
     access_token: str | None,
     device_id: str,
     dynamic_headers: dict[str, str],
-) -> None:
+    *,
+    state_key: str | None = None,
+) -> bool:
     """获取 ChatGPT Sentinel 验证令牌。
 
-    必须完成 prepare → PoW → Turnstile → finalize 验证链。
-    旧版简化预热在当前 ChatGPT Web 流程中已经无法可靠兜底，失败时直接抛出友好错误。
+    每轮使用独立的校验结果；已预取的结果只能领取一次，过期后重新验证。
     """
+    key = state_key or _sentinel_state_key(config, access_token, device_id)
+    config["_used_sentinel_prefetch"] = False
+    for name in list(dynamic_headers):
+        if name.lower() in _PER_TURN_HEADER_NAMES:
+            dynamic_headers.pop(name, None)
+    if key:
+        with _sentinel_prefetch_lock:
+            cached = _sentinel_prefetch.pop(key, None)
+        if cached and cached[0] > time.monotonic():
+            dynamic_headers.update(cached[1])
+            config["_used_sentinel_prefetch"] = True
+            return True
     try:
         if _fetch_sentinel_token(session, config, access_token, device_id, dynamic_headers):
-            return
+            return False
         raise ChatGPTWebError(
             "ChatGPT Web Sentinel 验证失败，未取得有效验证令牌。请检查代理/网络，或刷新浏览器后重新导出 Cookie/请求头。",
             status_code=502,
@@ -2036,11 +2129,16 @@ def _is_chatgpt_web_image_model(model: str | None) -> bool:
     return str(model or "").strip().lower() in CHATGPT_WEB_IMAGE_MODELS
 
 
-def _chatgpt_web_image_model_slug(model: str | None) -> str:
+def _chatgpt_web_image_model_slug(model: str | None, config: dict[str, Any] | None = None) -> str:
     normalized = str(model or "").strip().lower()
     if normalized.endswith("codex-gpt-image-2"):
         return "codex-gpt-image-2"
-    return DEFAULT_MODEL
+    options = config or {}
+    if normalized == "gpt-image-2.5":
+        configured = str(options.get("default_upstream_model_name_25") or "").strip()
+        if configured:
+            return normalize_model(configured)
+    return normalize_model(str(options.get("default_upstream_model_name") or DEFAULT_MODEL))
 
 
 def _prepare_image_conversation(
@@ -2075,7 +2173,7 @@ def _prepare_image_conversation(
         "action": "next",
         "fork_from_shared_post": False,
         "parent_message_id": str(uuid.uuid4()),
-        "model": _chatgpt_web_image_model_slug(model),
+        "model": _chatgpt_web_image_model_slug(model, config),
         "client_prepare_state": "success",
         "timezone_offset_min": int(config.get("timezone_offset_min", -480)),
         "timezone": str(config.get("timezone") or "Asia/Shanghai"),
@@ -2174,7 +2272,7 @@ def _build_image_generation_body(
             }
         ],
         "parent_message_id": str(uuid.uuid4()),
-        "model": _chatgpt_web_image_model_slug(model),
+        "model": _chatgpt_web_image_model_slug(model, config),
         "client_prepare_state": "sent",
         "timezone_offset_min": int(config.get("timezone_offset_min", -480)),
         "timezone": str(config.get("timezone") or "Asia/Shanghai"),
@@ -2358,7 +2456,7 @@ def generate_chatgpt_web_image(
         body = _build_image_generation_body(prompt, config, image_model, uploaded_images)
         log(
             "准备请求 ChatGPT Web picture_v2 生图: "
-            f"model={image_model}, tool_model={_chatgpt_web_image_model_slug(image_model)}, prompt_len={len(prompt)}"
+            f"model={image_model}, tool_model={_chatgpt_web_image_model_slug(image_model, config)}, prompt_len={len(prompt)}"
         )
         response = _request_image_generation(
             session,
@@ -2482,7 +2580,21 @@ def request_conversation_with_requirements(
     dynamic_headers: dict[str, str],
 ) -> Any:
     response = request_conversation(session, config, body, access_token, device_id, dynamic_headers)
+    if (
+        not response.ok and config.get("_used_sentinel_prefetch")
+        and getattr(response, "status_code", None) == 403
+        and _upstream_error_classification_from_response(response).code == "challenge_required"
+    ):
+        # 只在服务器明确拒绝预取校验时重新校验一次，额度错误不重发提问。
+        response.close()
+        warmup_chat_requirements(
+            session, {**config, "enable_sentinel_prefetch": False}, access_token, device_id, dynamic_headers,
+        )
+        config["_used_sentinel_prefetch"] = False
+        response = request_conversation(session, config, body, access_token, device_id, dynamic_headers)
     if response.ok:
+        # 本轮请求已被接收后再准备下一轮，避免提前生成的新令牌影响尚未提交的请求。
+        _prefetch_sentinel_async(session, config, access_token, device_id, dynamic_headers)
         return response
     before = dict(dynamic_headers)
     _merge_dynamic_headers_from_response(dynamic_headers, response)
@@ -2492,7 +2604,10 @@ def request_conversation_with_requirements(
         response.close()
     except Exception:
         pass
-    return request_conversation(session, config, body, access_token, device_id, dynamic_headers)
+    response = request_conversation(session, config, body, access_token, device_id, dynamic_headers)
+    if response.ok:
+        _prefetch_sentinel_async(session, config, access_token, device_id, dynamic_headers)
+    return response
 
 
 def iter_sse_lines(resp: Any) -> Iterable[str]:
@@ -2507,8 +2622,11 @@ def iter_sse_lines(resp: Any) -> Iterable[str]:
             line = raw.decode("utf-8", errors="replace").strip()
         else:
             line = str(raw).strip()
-        if line.startswith("data: "):
-            yield line[6:].strip()
+        if line.startswith("data:"):
+            data = line[5:].strip()
+            yield data
+            if data == "[DONE]":
+                return
 
 
 _STREAM_SUCCESS_TERMINAL_TYPES = {
@@ -2576,7 +2694,7 @@ def _record_stream_context(event: dict[str, Any], context: dict[str, Any] | None
             if status == "finished_successfully":
                 # 只有非思维链等类型才算真正完成
                 msg_content = msg.get("content") or {}
-                if msg_content.get("content_type") not in NON_TEXT_TYPES:
+                if msg_content.get("content_type") not in NON_TEXT_TYPES and _is_renderable_chatgpt_message(msg):
                     context["message_finished_successfully"] = True
             elif msg.get("end_turn") is True:
                 context["message_finished_successfully"] = True
@@ -3641,9 +3759,19 @@ def _collect_image_urls(value: Any, *, base_url: str = "https://chatgpt.com") ->
             visit(image_url, image_hint=True)
         else:
             add_url(image_url, image_hint=True)
-        for key in ("download_url", "downloadUrl", "url", "content_url", "contentUrl"):
+        for key in ("download_url", "downloadUrl", "content_url", "contentUrl"):
             if key in item:
-                add_url(item.get(key), image_hint=current_hint or key.lower().startswith(("download", "content")))
+                add_url(item.get(key), image_hint=True)
+        has_image_source = any(item.get(key) for key in (
+            "asset_pointer", "assetPointer", "image_asset_pointer", "file_id", "fileId",
+            "image_url", "download_url", "downloadUrl", "content_url", "contentUrl",
+        ))
+        # 网页搜图同时返回来源文章 url 与 image_url，来源文章不能作为第二张图片。
+        if not has_image_source:
+            for key in ("thumbnail_url", "thumbnailUrl"):
+                add_url(item.get(key), image_hint=True)
+            if not (item.get("thumbnail_url") or item.get("thumbnailUrl")):
+                add_url(item.get("url"), image_hint=current_hint)
         for key, child in item.items():
             if key in {
                 "asset_pointer",
@@ -3657,6 +3785,14 @@ def _collect_image_urls(value: Any, *, base_url: str = "https://chatgpt.com") ->
                 "url",
                 "content_url",
                 "contentUrl",
+                "thumbnail_url",
+                "thumbnailUrl",
+                "source",
+                "sources",
+                "attribution",
+                "attributions",
+                "citation",
+                "citations",
             }:
                 continue
             visit(child, image_hint=current_hint)
@@ -3690,7 +3826,10 @@ def extract_content(event: dict[str, Any]) -> str | None:
 
 
 def _is_renderable_chatgpt_message(message: dict[str, Any]) -> bool:
-    role = (message.get("author") or {}).get("role")
+    if str(message.get("channel") or "").strip().lower() == "analysis":
+        return False
+    author = message.get("author") or {}
+    role = author.get("role") if isinstance(author, dict) else None
     if role == "user":
         return False
     if role == "assistant":
@@ -3730,6 +3869,14 @@ def _merge_stream_snapshot(current: str, snapshot: str) -> str:
         return current
     if snapshot.startswith(current) or current in snapshot:
         return snapshot
+    current_clean = _strip_all_markers(current)
+    snapshot_clean = _strip_all_markers(snapshot)
+    if current_clean and snapshot_clean:
+        # 旧版续流信封可能只带后半段，但带引用的完整重放仍应覆盖已有正文。
+        if current_clean in snapshot_clean:
+            return snapshot
+        if snapshot_clean in current_clean:
+            return current
     if _looks_like_prefix_suffix_gap(current, snapshot):
         return snapshot
     max_overlap = min(len(current), len(snapshot))
@@ -4152,6 +4299,8 @@ def _render_stream_patch_value(path_suffix: str, value: Any) -> str:
 
 
 def _has_stream_content_patch(event: dict[str, Any]) -> bool:
+    if event.get("p") in ("/message/content/parts", "/content/parts"):
+        return True
     is_target_path, _part_index, _path_suffix = _stream_content_part_index(event.get("p"))
     if is_target_path:
         return True
@@ -4177,13 +4326,22 @@ def _extract_text_incremental(
         if not isinstance(content, dict) or content.get("content_type") in NON_TEXT_TYPES:
             continue
         parts = content.get("parts") or []
+        authoritative_snapshot = isinstance(content.get("parts"), list) and (
+            isinstance(event.get("message"), dict)
+            or event.get("p") == "/message"
+        )
         had_indexed_parts = False
         if parts_by_index is not None and isinstance(parts, list):
             had_indexed_parts = bool(parts_by_index)
+            if authoritative_snapshot:
+                parts_by_index.clear()
             for index, part in enumerate(parts):
                 part_text = _render_stream_part_value(part)
                 if part_text:
-                    parts_by_index[int(index)] = _merge_stream_snapshot(parts_by_index.get(int(index), ""), part_text)
+                    parts_by_index[index] = (
+                        part_text if authoritative_snapshot
+                        else _merge_stream_snapshot(parts_by_index.get(index, ""), part_text)
+                    )
             text = _join_stream_parts(parts_by_index)
         else:
             chunks = extract_visible_text(parts) or extract_visible_text(content)
@@ -4191,14 +4349,23 @@ def _extract_text_incremental(
         image_markdown = _image_markdown_from_value(msg)
         if image_markdown and image_markdown in text:
             image_markdown = ""
-        if text.strip() or image_markdown:
-            text = _apply_citation_references(text, _collect_citation_references(msg)) if text.strip() else ""
+        if text.strip() or image_markdown or authoritative_snapshot:
             snapshot = f"{text}\n\n{image_markdown}".strip() if image_markdown else text
-            if parts_by_index is not None and had_indexed_parts:
+            if authoritative_snapshot or (parts_by_index is not None and had_indexed_parts):
                 return snapshot
             return _merge_stream_snapshot(current, snapshot)
 
     p = event.get("p")
+    if p in ("/message/content/parts", "/content/parts") and isinstance(event.get("v"), list):
+        parts = parts_by_index if parts_by_index is not None else {}
+        if event.get("o") in ("add", "replace"):
+            parts.clear()
+        elif event.get("o") != "append":
+            return current
+        start_index = max(parts, default=-1) + 1
+        for index, value in enumerate(event["v"], start=start_index):
+            parts[index] = _render_stream_part_value(value)
+        return _join_stream_parts(parts)
     is_target_path, part_index, path_suffix = _stream_content_part_index(p)
 
     if is_target_path:
@@ -4213,7 +4380,7 @@ def _extract_text_incremental(
                 parts_by_index[part_index] = part_text
                 return _join_stream_parts(parts_by_index)
             if op == "add":
-                parts_by_index[part_index] = part_text if not existing else _merge_stream_snapshot(existing, part_text)
+                parts_by_index[part_index] = part_text
                 return _join_stream_parts(parts_by_index)
         if op == "append":
             return _append_stream_part(current, part_text)
@@ -4247,6 +4414,96 @@ def _extract_text_incremental(
     return current
 
 
+def _expand_stream_patches(event: dict[str, Any], depth: int = 0) -> Iterator[dict[str, Any]]:
+    """按上游顺序展开批量补丁，确保 channel 等元信息先于后面的正文生效。"""
+    if depth > 32:
+        raise ChatGPTWebError("ChatGPT Web 流式补丁嵌套过深。")
+    path = event.get("p")
+    if isinstance(path, list):
+        path = "/" + "/".join(str(part) for part in path) if path else ""
+        event = {**event, "p": path}
+    value = event.get("v")
+    if path in (None, "") and event.get("o") in (None, "patch") and isinstance(value, list):
+        envelope = {key: item for key, item in event.items() if key not in {"p", "o", "v", "message"}}
+        if isinstance(event.get("message"), dict):
+            yield {**envelope, "message": event["message"]}
+        elif envelope:
+            yield envelope
+        for patch in value:
+            if isinstance(patch, dict):
+                yield from _expand_stream_patches({**envelope, **patch}, depth + 1)
+        return
+    yield event
+
+
+def _iter_chatgpt_stream_events(events: Iterable[str]) -> Iterator[dict[str, Any]]:
+    """统一旧快照和网页 v1 补丁格式；只保留消息元信息，不缓存整段回答。"""
+    message_metadata: dict[str, Any] = {}
+    previous_path: str | None = None
+    previous_operation: str | None = None
+    fields = {
+        "/message/id": ("id",),
+        "/message/author/role": ("author", "role"),
+        "/message/recipient": ("recipient",),
+        "/message/channel": ("channel",),
+        "/message/content/content_type": ("content", "content_type"),
+        "/message/status": ("status",),
+        "/message/end_turn": ("end_turn",),
+    }
+    for data in events:
+        if not data:
+            continue
+        if data == "[DONE]":
+            return
+        try:
+            root = json.loads(data)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(root, dict):
+            continue
+        for event in _expand_stream_patches(root):
+            if (
+                "p" not in event and "o" not in event and isinstance(event.get("v"), str)
+                and previous_path is not None and previous_operation is not None
+            ):
+                # 紧凑编码延续上一个补丁的路径，不能猜成编号最大的正文 part。
+                event = {**event, "p": previous_path, "o": previous_operation}
+            path = event.get("p")
+            value = event.get("v")
+            operation = event.get("o")
+            if isinstance(path, str) and path and isinstance(operation, str):
+                previous_path, previous_operation = path, operation
+            message = event.get("message")
+            if not isinstance(message, dict) and isinstance(value, dict):
+                message = value if path == "/message" else value.get("message")
+            if isinstance(message, dict):
+                author = message.get("author")
+                content = message.get("content")
+                message_metadata = {
+                    "id": message.get("id"),
+                    "author": dict(author) if isinstance(author, dict) else {"role": "assistant"},
+                    "recipient": message.get("recipient") or "all",
+                    "channel": message.get("channel") or "",
+                    "content": {"content_type": content.get("content_type", "text") if isinstance(content, dict) else "text"},
+                    "status": message.get("status") or "",
+                    "end_turn": message.get("end_turn"),
+                }
+                if path == "/message":
+                    event = {**event, "message": message}
+            elif isinstance(path, str) and path in fields:
+                if not message_metadata or (path == "/message/id" and value != message_metadata.get("id")):
+                    message_metadata = {"author": {"role": "assistant"}, "recipient": "all", "content": {"content_type": "text"}}
+                keys = fields[path]
+                target = message_metadata
+                for key in keys[:-1]:
+                    target = target.setdefault(key, {})
+                target[keys[-1]] = value
+                event = {**event, "message": copy.deepcopy(message_metadata)}
+            elif path == "/conversation_id" and isinstance(value, str):
+                event = {**event, "conversation_id": value}
+            yield event
+
+
 def parse_sse_events(
     events: Iterable[str],
     context: dict[str, Any] | None = None,
@@ -4258,19 +4515,11 @@ def parse_sse_events(
     conversation_id = None
     assistant_message_id = None
     handoff = False
-    debug_lines = []
+    event_count = 0
     citation_refs: list[dict[str, str]] = []
     parts_by_index: dict[int, str] = {}
-    for data in events:
-        if not data or data == "[DONE]":
-            continue
-        debug_lines.append(data)
-        try:
-            event = json.loads(data)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(event, dict):
-            continue
+    for event in _iter_chatgpt_stream_events(events):
+        event_count += 1
         if event.get("error"):
             _raise_classified_upstream_error(event.get("error"))
         citation_refs.extend(_collect_citation_references(event))
@@ -4286,7 +4535,7 @@ def parse_sse_events(
             if not isinstance(candidate, dict):
                 continue
             msg = candidate.get("message")
-            if isinstance(msg, dict) and _is_renderable_chatgpt_message(msg):
+            if isinstance(msg, dict):
                 status = msg.get("status")
                 metadata = msg.get("metadata") or {}
                 err_detail = ""
@@ -4307,10 +4556,10 @@ def parse_sse_events(
                 content_type = content.get("content_type")
                 recipient = msg.get("recipient")
                 is_tool = (content_type == "code" or (recipient and recipient != "all"))
-                is_ignored = (content_type in NON_TEXT_TYPES or is_tool)
+                is_ignored = not _is_renderable_chatgpt_message(msg) or content_type in NON_TEXT_TYPES or is_tool
 
                 msg_id = msg.get("id")
-                if msg_id and (msg_id != current_message_id or is_ignored != current_message_ignored):
+                if (msg_id and msg_id != current_message_id) or is_ignored != current_message_ignored:
                     current_message_ignored = is_ignored
                     if is_ignored:
                         current_message_id = msg_id
@@ -4324,7 +4573,7 @@ def parse_sse_events(
                             parts_by_index.clear()
                 if msg_id and not is_ignored:
                     assistant_message_id = msg_id
-                if content_type == "model_editable_context":
+                if content_type == "model_editable_context" and _is_renderable_chatgpt_message(msg):
                     parts = content.get("parts")
                     if isinstance(parts, list):
                         historical_text = "".join(str(p) for p in parts if p is not None)
@@ -4333,11 +4582,12 @@ def parse_sse_events(
                             for idx, part in enumerate(parts):
                                 parts_by_index[idx] = str(part)
 
-        if current_message_allowed or (current_message_id is None and _has_stream_content_patch(event)):
+        if current_message_allowed or (current_message_id is None and current_message_ignored is None and _has_stream_content_patch(event)):
+            current_message_allowed = True
             accumulated = _extract_text_incremental(event, accumulated, parts_by_index)
 
-    if not accumulated and debug_lines:
-        _api_logger.debug(f"[parse_sse_events] 未解析出有效文本，接收到 {len(debug_lines)} 条事件")
+    if not accumulated and event_count:
+        _api_logger.debug(f"[parse_sse_events] 未解析出有效文本，接收到 {event_count} 条事件")
 
     if accumulated:
         accumulated = _apply_citation_references(accumulated, citation_refs)
@@ -4347,24 +4597,20 @@ def parse_sse_events(
 
 def iter_delta_events(events: Iterable[str], context: dict[str, Any] | None = None) -> Iterator[ChatGPTWebCompletion]:
     accumulated = ""
+    displayed_text = ""
+    historical_prefix = ""
+    citation_refs: list[dict[str, str]] = []
     current_message_id = None
     current_message_allowed = False
     current_message_ignored = None
     conversation_id = None
     assistant_message_id = None
     parts_by_index: dict[int, str] = {}
-    for data in events:
-        if not data or data == "[DONE]":
-            continue
-        try:
-            event = json.loads(data)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(event, dict):
-            continue
+    for event in _iter_chatgpt_stream_events(events):
         if event.get("error"):
             _raise_classified_upstream_error(event.get("error"))
         event_type = str(event.get("type") or "")
+        citation_refs.extend(_collect_citation_references(event))
         _record_stream_context(event, context)
         conversation_id = conversation_id or event.get("conversation_id")
         if context is not None and conversation_id:
@@ -4374,7 +4620,7 @@ def iter_delta_events(events: Iterable[str], context: dict[str, Any] | None = No
             if not isinstance(candidate, dict):
                 continue
             msg = candidate.get("message")
-            if isinstance(msg, dict) and _is_renderable_chatgpt_message(msg):
+            if isinstance(msg, dict):
                 status = msg.get("status")
                 metadata = msg.get("metadata") or {}
                 err_detail = ""
@@ -4395,10 +4641,10 @@ def iter_delta_events(events: Iterable[str], context: dict[str, Any] | None = No
                 content_type = content.get("content_type")
                 recipient = msg.get("recipient")
                 is_tool = (content_type == "code" or (recipient and recipient != "all"))
-                is_ignored = (content_type in NON_TEXT_TYPES or is_tool)
+                is_ignored = not _is_renderable_chatgpt_message(msg) or content_type in NON_TEXT_TYPES or is_tool
 
                 msg_id = msg.get("id")
-                if msg_id and (msg_id != current_message_id or is_ignored != current_message_ignored):
+                if (msg_id and msg_id != current_message_id) or is_ignored != current_message_ignored:
                     current_message_ignored = is_ignored
                     if is_ignored:
                         current_message_id = msg_id
@@ -4414,22 +4660,33 @@ def iter_delta_events(events: Iterable[str], context: dict[str, Any] | None = No
                     assistant_message_id = msg_id
                     if context is not None:
                         context["message_id"] = assistant_message_id
-                if content_type == "model_editable_context":
+                if content_type == "model_editable_context" and _is_renderable_chatgpt_message(msg):
                     parts = content.get("parts")
                     if isinstance(parts, list):
                         historical_text = "".join(str(p) for p in parts if p is not None)
                         if historical_text:
                             accumulated = historical_text
+                            historical_prefix = historical_text
                             for idx, part in enumerate(parts):
                                 parts_by_index[idx] = str(part)
 
-        if current_message_allowed or (current_message_id is None and _has_stream_content_patch(event)):
-            new_text = _extract_text_incremental(event, accumulated, parts_by_index)
-            if new_text != accumulated:
-                delta = new_text[len(accumulated):] if new_text.startswith(accumulated) else new_text
-                accumulated = new_text
-                if delta:
-                    yield ChatGPTWebCompletion(delta, DEFAULT_MODEL, conversation_id, assistant_message_id)
+        if current_message_allowed or (current_message_id is None and current_message_ignored is None and _has_stream_content_patch(event)):
+            current_message_allowed = True
+            accumulated = _extract_text_incremental(event, accumulated, parts_by_index)
+            visible_text = accumulated
+            if historical_prefix and visible_text.startswith(historical_prefix):
+                visible_text = visible_text[len(historical_prefix):]
+            visible_text = _apply_citation_references(visible_text, citation_refs)
+            # 引用标记可能跨多个分片到达，只暂存末尾未闭合的协议标记。
+            visible_text = re.sub(r"\ue200[^\ue201]*$", "", visible_text)
+            if visible_text != displayed_text:
+                is_replacement = not visible_text.startswith(displayed_text)
+                delta = visible_text if is_replacement else visible_text[len(displayed_text):]
+                displayed_text = visible_text
+                yield ChatGPTWebCompletion(
+                    delta, DEFAULT_MODEL, conversation_id, assistant_message_id,
+                    snapshot_text=visible_text if is_replacement else None,
+                )
 
 
 def _is_descendant_of(node_id: str, target_parent_id: str, mapping: dict[str, Any]) -> bool:
@@ -5141,6 +5398,18 @@ def _handoff_messages_from_ws_item(item: Any, topic_id: str) -> tuple[list[Any],
     return messages, should_subscribe, terminal
 
 
+def _handoff_replay_key(message: Any, events: list[str]) -> tuple[str, str, bytes] | None:
+    if not isinstance(message, dict) or not events:
+        return None
+    for key in ("offset", "sequence", "seq"):
+        value = message.get(key)
+        if isinstance(value, (str, int)) and not isinstance(value, bool) and str(value):
+            # 只有同一编号、同一载荷才视为重放；不同编号的相同文字是合法增量。
+            digest = hashlib.sha256("\n".join(events).encode("utf-8")).digest()
+            return key, str(value), digest
+    return None
+
+
 async def _consume_handoff_ws_topic(
     ws_url: str,
     topic_id: str,
@@ -5157,6 +5426,7 @@ async def _consume_handoff_ws_topic(
         raise ChatGPTWebError("缺少 websockets 依赖，无法订阅 ChatGPT handoff topic。") from exc
 
     event_strings: list[str] = []
+    seen_messages: set[tuple[str, str, bytes]] = set()
     context: dict[str, Any] = {}
     deadline = time.monotonic() + max(30.0, float(timeout_sec))
     terminal_seen = False
@@ -5239,6 +5509,12 @@ async def _consume_handoff_ws_topic(
                     log(f"stream_handoff Celsius WebSocket 已订阅 topic: topic_id={topic_id}")
                 for message in messages:
                     new_events, message_terminal = _handoff_event_strings_from_ws_message(message, topic_id)
+                    replay_key = _handoff_replay_key(message, new_events)
+                    if replay_key is not None:
+                        if replay_key in seen_messages:
+                            frame_terminal = frame_terminal or message_terminal
+                            continue
+                        seen_messages.add(replay_key)
                     if new_events:
                         event_strings.extend(new_events)
                         last_event_at = time.monotonic()
@@ -5428,6 +5704,7 @@ def _iter_handoff_topic_chunks(
         poll_worker.start()
 
     emitted_text = str(initial_text or "")
+    snapshot_replacements = _request_options_bool(config, "stream_snapshot_replacements", default=False)
     last_conversation_id = ""
     last_message_id = ""
     if isinstance(context, dict):
@@ -5458,7 +5735,10 @@ def _iter_handoff_topic_chunks(
                             f"等待最终会话校验: emitted_len={len(emitted_text)}, snapshot_len={len(snapshot)}"
                         )
                     continue
-                delta = _append_only_delta(emitted_text, snapshot)
+                delta = (
+                    snapshot if snapshot_replacements and not snapshot.startswith(emitted_text)
+                    else _append_only_delta(emitted_text, snapshot)
+                )
                 if not delta:
                     if isinstance(context, dict):
                         context["handoff_rewrite_seen"] = True
@@ -5486,7 +5766,10 @@ def _iter_handoff_topic_chunks(
                     last_message_id = str(message_id)
                 preferred = _prefer_more_complete_text(emitted_text, final_text)
                 if preferred == final_text and final_text and final_text != emitted_text:
-                    delta = _append_only_delta(emitted_text, final_text)
+                    delta = (
+                        final_text if snapshot_replacements and not final_text.startswith(emitted_text)
+                        else _append_only_delta(emitted_text, final_text)
+                    )
                     if delta:
                         emitted_text = final_text
                         yield ChatGPTWebCompletion(
@@ -5573,7 +5856,7 @@ def _buffer_stream_until_handoff_decision(config: dict[str, Any], model_id: str)
         return configured
     if configured not in (None, ""):
         return str(configured).strip().lower() in {"1", "true", "yes", "on", "y"}
-    return model_id == "gpt-5-5-thinking"
+    return False
 
 
 def _final_fetch_after_stream_completion(config: dict[str, Any], model_id: str) -> bool:
@@ -5582,7 +5865,7 @@ def _final_fetch_after_stream_completion(config: dict[str, Any], model_id: str) 
         return configured
     if configured not in (None, ""):
         return str(configured).strip().lower() in {"1", "true", "yes", "on", "y"}
-    return model_id == "gpt-5-5-thinking"
+    return False
 
 
 def _final_stream_fetch_attempts(config: dict[str, Any]) -> int:
@@ -5694,6 +5977,9 @@ def _prepare_chatgpt_request(
     options = dict(request_options or {})
     conversation_append_enabled = _conversation_append_enabled(options)
     config = dict(CONFIG)
+    for option in ("buffer_stream_until_handoff", "final_fetch_after_stream_completion", "stream_snapshot_replacements", "enable_sentinel_prefetch"):
+        if option in options:
+            config[option] = _request_options_bool(options, option, default=False)
     request_timeout = _request_options_float(options, "upstream_timeout_sec", minimum=1.0, maximum=600.0)
     if request_timeout is not None:
         config["request_timeout_sec"] = request_timeout
@@ -5740,12 +6026,13 @@ def _prepare_chatgpt_request(
     generated_images_dir = _request_options_value(options, "generated_images_dir")
     if generated_images_dir:
         config["generated_images_dir"] = generated_images_dir
+    for key in ("default_upstream_model_name", "default_upstream_model_name_25"):
+        upstream_model = _request_options_value(options, key)
+        if upstream_model:
+            config[key] = upstream_model
     auth = parse_auth_value(str(config.get("api_key") or ""))
     model_id = normalize_model(model or options.get("model") or DEFAULT_MODEL)
-    session = make_session(config, auth)
-    session_info, access_token, auth_error = get_session_info(session, config, auth.access_token)
-    if not session_info and not access_token:
-        raise ChatGPTWebError(f"ChatGPT 登录态校验失败: {auth_error or '未取得会话信息'}")
+    session, session_info, access_token = _acquire_authenticated_session(config, auth)
     device_id = auth.device_id or get_device_id(session_info, auth.cookie, access_token)
     if auth.cookie and not cookie_value(auth.cookie, "oai-did"):
         session.headers["Cookie"] = _append_cookie_if_missing(auth.cookie, "oai-did", device_id)
@@ -5936,12 +6223,12 @@ LIMIT_KEYWORDS = (
     "you've reached",
     "you have reached",
     "reached your limit",
-    "try again later",
-    "try again after",
+    "you've hit your limit",
+    "you have hit your limit",
+    "hit the limit",
+    "hit your limit",
     "额度",
     "限流",
-    "次数",
-    "稍后重试",
 )
 AUTH_KEYWORDS = (
     "unauthorized",
@@ -6121,7 +6408,11 @@ def classify_upstream_error(
     elif upstream_status == 429 or has_limit:
         code = "quota_or_rate_limited"
         local_status = 429
-        base = "账号、模型或请求频率可能触发额度/限流，请稍后重试，或切换 auto/其他可用模型。"
+        base = (
+            "ChatGPT 对本次请求返回了使用上限或限流提示。"
+            "网页仍能回答时，请核对软件与网页的账号、模型和思考档位是否一致；"
+            "不同模型或功能的可用额度可能不同。"
+        )
     else:
         code = "upstream_error"
         local_status = upstream_status if upstream_status >= 400 else 502
@@ -6171,6 +6462,8 @@ def _raise_classified_upstream_error(
     detail: str = "",
     headers: Any | None = None,
 ) -> None:
+    if not detail:
+        detail = _upstream_error_detail(payload)
     classification = classify_upstream_error(
         status_code=status_code,
         payload=payload,
@@ -6182,6 +6475,22 @@ def _raise_classified_upstream_error(
         classification.status_code,
         error_code=classification.code,
     )
+
+
+def _upstream_error_detail(payload: Any, *, depth: int = 0) -> str:
+    """保留上游给出的错误码和说明，避免流内错误只剩本地推测分类。"""
+    if depth > 3:
+        return ""
+    if isinstance(payload, str):
+        return _truncate_text(payload, 800)
+    if not isinstance(payload, dict):
+        return ""
+    details = []
+    for key in ("code", "type", "message", "detail", "error_message", "error"):
+        value = _upstream_error_detail(payload.get(key), depth=depth + 1)
+        if value and value not in details:
+            details.append(value)
+    return _truncate_text("；".join(details), 1200)
 
 
 def _upstream_error_message(response: Any) -> str:
@@ -6420,24 +6729,30 @@ def _stream_chatgpt_web_once(
         context = {"conversation_id": None, "message_id": None}
         sse_completed = False
         buffer_until_handoff_decision = _buffer_stream_until_handoff_decision(config, model_id)
+        snapshot_replacements = _request_options_bool(config, "stream_snapshot_replacements", default=False)
         pending_chunks: list[ChatGPTWebCompletion] = []
-        # 客户端是否已实际收到正文（缓冲中的 pending_chunks 不算）。
-        # 一旦为 True，就绝不允许全量替换，否则客户端会看到开头重复。
+        # 缓冲中的正文尚未发出；已经发出的正文只能通过协商过的替换帧修正。
         client_sent_any = False
         try:
             for event in iter_delta_events(iter_sse_lines(response), context):
 
-                if event.text and (event.text.strip() or yielded_len > 0):
+                if event.snapshot_text is not None or (event.text and (event.text.strip() or yielded_len > 0)):
                     event_text = _inline_chatgpt_file_images(
-                        event.text,
+                        event.snapshot_text if event.snapshot_text is not None else event.text,
                         session,
                         config,
                         access_token,
                         dynamic_headers,
                         conversation_id=event.conversation_id or context.get("conversation_id"),
                     )
-                    yielded_len += len(event_text)
-                    yielded_text += event_text
+                    if event.snapshot_text is not None:
+                        yielded_text = event_text
+                        # 未发送的旧增量已经被快照取代，不能随后再次冲刷到客户端。
+                        if buffer_until_handoff_decision:
+                            pending_chunks.clear()
+                    else:
+                        yielded_text += event_text
+                    yielded_len = len(yielded_text)
                     chunk = ChatGPTWebCompletion(
                         text=event_text,
                         model=model_id,
@@ -6517,7 +6832,9 @@ def _stream_chatgpt_web_once(
                     )
                     or _should_replace_with_snapshot(applied_yielded_text, fetched_text)
                 )
-                allow_full_replacement = bool(buffer_until_handoff_decision) and replacement_needed
+                allow_full_replacement = (
+                    (buffer_until_handoff_decision and not client_sent_any) or snapshot_replacements
+                ) and replacement_needed
                 if replacement_needed and not allow_full_replacement:
                     log("[流式传输] 最终会话校验得到重写快照；已发送正文，跳过全量替换以避免重复。")
                     delta = _append_only_delta(applied_yielded_text, fetched_text)
@@ -6540,6 +6857,7 @@ def _stream_chatgpt_web_once(
                         model=model_id,
                         conversation_id=str(conversation_id),
                         message_id=message_id or fetched_msg_id,
+                        snapshot_text=fetched_text if allow_full_replacement else None,
                     )
                 return
 
@@ -6597,7 +6915,10 @@ def _stream_chatgpt_web_once(
                     ):
                         conversation_id = handoff_chunk.conversation_id or conversation_id
                         message_id = handoff_chunk.message_id or message_id
-                        yielded_text = handoff_chunk.snapshot_text or _merge_stream_snapshot(yielded_text, handoff_chunk.text)
+                        yielded_text = (
+                            handoff_chunk.snapshot_text if handoff_chunk.snapshot_text is not None
+                            else yielded_text + handoff_chunk.text
+                        )
                         yielded_len = len(yielded_text)
                         client_sent_any = True
                         yield handoff_chunk
@@ -6682,9 +7003,9 @@ def _stream_chatgpt_web_once(
                         )
                         message_id = message_id or fetched_msg_id
                     else:
-                        # 全量替换仅限缓冲模式下的"损坏恢复"场景（如上游快照被改写）：
-                        # 即使 handoff 已流出部分正文，也宁可整段重发干净文本，保证完整性。
-                        allow_full_replacement = bool(buffer_until_handoff_decision) and replacement_needed
+                        allow_full_replacement = (
+                            (buffer_until_handoff_decision and not client_sent_any) or snapshot_replacements
+                        ) and replacement_needed
                         if replacement_needed and not allow_full_replacement:
                             log("[流式传输] 兜底拉取得到重写快照；已发送正文，跳过全量替换以避免重复。")
                             delta = _append_only_delta(applied_yielded_text, fetched_text)
@@ -6712,6 +7033,7 @@ def _stream_chatgpt_web_once(
                                 model=model_id,
                                 conversation_id=conversation_id,
                                 message_id=message_id,
+                                snapshot_text=fetched_text if allow_full_replacement else None,
                             )
                 if yielded_len > 0:
                     if pending_chunks:
@@ -7195,6 +7517,7 @@ class ChatGPTWeb2APIHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Accel-Buffering", "no")
         self.end_headers()
         self._write_sse(
             {
@@ -7228,11 +7551,13 @@ class ChatGPTWeb2APIHandler(BaseHTTPRequestHandler):
 
     def _handle_stream(self, messages: list[dict[str, Any]], model: str, body: dict[str, Any]) -> None:
         conversation_append_enabled = _conversation_append_enabled(body)
+        snapshot_replacements = _request_options_bool(body, "stream_snapshot_replacements", default=False)
         created = int(time.time())
         chunk_id = f"chatcmpl-chatgpt-web-{uuid.uuid4().hex}"
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Accel-Buffering", "no")
         self.end_headers()
         self._write_sse(
             {
@@ -7248,16 +7573,35 @@ class ChatGPTWeb2APIHandler(BaseHTTPRequestHandler):
             accumulated_text = ""
             for event in stream_chatgpt_web(messages, model, body):
                 last = event
-                if not event.text:
+                if not event.text and event.snapshot_text is None:
                     continue
-                accumulated_text = event.snapshot_text or _merge_stream_snapshot(accumulated_text, event.text)
+                choice: dict[str, Any] = {"index": 0, "finish_reason": None}
+                snapshot = event.snapshot_text
+                if snapshot is not None and snapshot == accumulated_text:
+                    continue
+                if snapshot is not None and not snapshot.startswith(accumulated_text) and snapshot_replacements:
+                    # 桌面客户端明确声明支持快照修正时，使用其已有的 message 分支替换正文。
+                    accumulated_text = snapshot
+                    choice.update(message={"role": "assistant", "content": accumulated_text}, deepcat_replace=True)
+                else:
+                    if snapshot is None:
+                        delta_text = event.text
+                    elif snapshot.startswith(accumulated_text):
+                        delta_text = snapshot[len(accumulated_text):]
+                    else:
+                        # 普通 OpenAI 客户端只支持追加，不能向它重发完整快照。
+                        delta_text = _delta_after_yielded_text(accumulated_text, snapshot)
+                    if not delta_text:
+                        continue
+                    accumulated_text += delta_text
+                    choice["delta"] = {"content": delta_text}
                 self._write_sse(
                     {
                         "id": chunk_id,
                         "object": "chat.completion.chunk",
                         "created": created,
                         "model": model,
-                        "choices": [{"index": 0, "delta": {"content": event.text}, "finish_reason": None}],
+                        "choices": [choice],
                     }
                 )
             final_chunk: dict[str, Any] = {
@@ -7281,6 +7625,7 @@ class ChatGPTWeb2APIHandler(BaseHTTPRequestHandler):
                 if history_hash:
                     _update_cache(history_hash, (last.conversation_id, last.message_id))
                     log(f"[会话追加] 流式结束，已缓存历史映射: hash={history_hash} -> ({last.conversation_id}, {last.message_id})")
+            self._write_sse("[DONE]")
         except Exception as exc:
             friendly_exc = chatgpt_error_from_exception(exc)
             log(f"流式响应失败: {friendly_exc}")

@@ -872,11 +872,16 @@ class OcrTranslationWorker(QThread):
                     self.reasoning_delta.emit(reasoning_text)
 
                 delta_text = self._clean_model_text(delta.get("content", "") or "") if isinstance(delta, dict) else ""
-                if delta_text:
+                if choice.get("deepcat_replace") is True and isinstance(choice.get("message"), dict):
+                    snapshot_text = self._clean_model_text(choice["message"].get("content", "") or "")
+                    self._consume_chat_completion_stream_text(chunks, snapshot_text, is_delta=False, replace=True)
+                elif delta_text:
                     self._consume_chat_completion_stream_text(chunks, delta_text, is_delta=True)
                 elif isinstance(choice.get("message"), dict):
                     snapshot_text = self._clean_model_text(choice["message"].get("content", "") or "")
-                    self._consume_chat_completion_stream_text(chunks, snapshot_text, is_delta=False)
+                    self._consume_chat_completion_stream_text(
+                        chunks, snapshot_text, is_delta=False, replace=choice.get("deepcat_replace") is True
+                    )
             return "".join(chunks).strip()
         finally:
             self._release_local_hunyuan_server(local_active)
@@ -1201,6 +1206,7 @@ Translate the above text enclosed with <translate_input> into {actual_target} wi
             "fallback_fetch_interval_sec": 5,
             "fallback_fetch_stable_after_text_attempts": 3,
             "localize_generated_images": True,
+            "stream_snapshot_replacements": True,
             "enable_conversation_append": bool(self._enable_conversation_append),
         }
 
@@ -1295,11 +1301,17 @@ Translate the above text enclosed with <translate_input> into {actual_target} wi
         text: str,
         *,
         is_delta: bool,
+        replace: bool = False,
     ) -> None:
         value = str(text or "")
+        accumulated = "".join(chunks)
+        if replace:
+            chunks[:] = [value] if value else []
+            if value != accumulated:
+                self.translation_delta.emit(self.STREAM_REPLACE_MARKER + value if accumulated else value)
+            return
         if not value:
             return
-        accumulated = "".join(chunks)
         if is_delta:
             # OpenAI 兼容协议中 delta.content 的语义就是新增片段，必须逐字原样追加。
             # 若对增量片段做快照重叠合并，会误删跨分片的重复字符、空格、换行和
@@ -1965,11 +1977,16 @@ Translate the above text enclosed with <translate_input> into {actual_target} wi
                     self.reasoning_delta.emit(reasoning_text)
 
                 delta_text = self._clean_model_text(delta.get("content", "") or "") if isinstance(delta, dict) else ""
-                if delta_text:
+                if choice.get("deepcat_replace") is True and isinstance(choice.get("message"), dict):
+                    snapshot_text = self._clean_model_text(choice["message"].get("content", "") or "")
+                    self._consume_chat_completion_stream_text(chunks, snapshot_text, is_delta=False, replace=True)
+                elif delta_text:
                     self._consume_chat_completion_stream_text(chunks, delta_text, is_delta=True)
                 elif isinstance(choice.get("message"), dict):
                     snapshot_text = self._clean_model_text(choice["message"].get("content", "") or "")
-                    self._consume_chat_completion_stream_text(chunks, snapshot_text, is_delta=False)
+                    self._consume_chat_completion_stream_text(
+                        chunks, snapshot_text, is_delta=False, replace=choice.get("deepcat_replace") is True
+                    )
             return "".join(chunks).strip()
         finally:
             self._release_local_hunyuan_server(local_active)

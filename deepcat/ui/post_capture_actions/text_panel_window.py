@@ -48,6 +48,7 @@ from deepcat.ui.chat_bubbles import BubbleListView
 from deepcat.ui.clipboard_formats import clean_clipboard_text, copy_markdown_to_clipboard, copy_plain_text_to_clipboard
 from deepcat.ui.popup_behavior import POPUP_EXACT_WIDTH_PROPERTY, set_disable_global_tooltip
 from deepcat.ui.timer_scope import single_shot_scoped
+from deepcat.ui.post_capture_actions.text_widgets import is_input_method_composing
 from deepcat.utils.logger import get_logger
 from PyQt6.QtWidgets import QFrame, QPushButton
 from PyQt6.QtGui import QColor
@@ -647,6 +648,8 @@ class TextPanelWindowMixin:
         bubble_view = getattr(self, "_bubble_view", None)
         if editor is None or bubble_view is None:
             return False
+        if is_input_method_composing(editor):
+            return False
         try:
             if not bubble_view.isVisible():
                 return False
@@ -670,6 +673,8 @@ class TextPanelWindowMixin:
             return False
         editor = getattr(self, "_editor", None)
         if editor is None:
+            return False
+        if is_input_method_composing(editor):
             return False
         try:
             return not bool(str(editor.toPlainText() or ""))

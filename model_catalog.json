@@ -51,7 +51,7 @@
     },
     "ChatGPT Web": {
       "base_url": "http://127.0.0.1:8082",
-      "model_name": "gpt-5-3",
+      "model_name": "auto",
       "api_key": "",
       "use_proxy": false,
       "model_type": "chatgpt_web",

@@ -93,7 +93,12 @@ from deepcat.ui.post_capture_actions.workers import (
     OcrTranslationWorker,
 )
 from deepcat.ui.thread_utils import request_thread_cancel
-from deepcat.ui.post_capture_actions.text_widgets import PremiumTextEdit, RoundedTextEditContainer, _ThinkingCard
+from deepcat.ui.post_capture_actions.text_widgets import (
+    PremiumTextEdit,
+    RoundedTextEditContainer,
+    _ThinkingCard,
+    is_input_method_composing,
+)
 from deepcat.ui.post_capture_actions.title_bar import OcrTitleBar, _OcrTitleBarButton, _load_title_owl_pixmap
 from deepcat.ui.post_capture_actions.quick_actions import HoverIconButton, OutputQuickActionBar
 from deepcat.ui.post_capture_actions.ai_history import AIChatHistorySidebar, _ai_history_search_terms, _first_search_match
@@ -916,7 +921,13 @@ class OcrTextPanel(
                 preserve_output_area=True,
             )
         )
-        self._editor.textChanged.connect(self._on_source_text_changed)
+        self._source_text_update_pending = False
+        self._source_text_update_timer = QTimer(self)
+        self._source_text_update_timer.setSingleShot(True)
+        self._source_text_update_timer.setInterval(90)
+        self._source_text_update_timer.timeout.connect(self._on_source_text_changed)
+        self._editor.textChanged.connect(self._schedule_source_text_changed)
+        self._editor.composition_changed.connect(self._on_editor_composition_changed)
         self._editor.exit_requested.connect(self.close)
         self._editor.files_pasted.connect(self._handle_pasted_files)
         self._editor.image_pasted.connect(self._handle_pasted_image)
@@ -938,7 +949,7 @@ class OcrTextPanel(
 
         self._esc_shortcut = QShortcut(QKeySequence("Esc"), self)
         self._esc_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
-        self._esc_shortcut.activated.connect(self.close)
+        self._esc_shortcut.activated.connect(self._close_from_escape)
         self._history_shortcut = QShortcut(QKeySequence("Ctrl+H"), self)
         self._history_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self._history_shortcut.activated.connect(self._toggle_history)
@@ -1963,7 +1974,29 @@ class OcrTextPanel(
         self._sync_input_watermark_visibility()
         self._activate_for_text_input(repeat=False)
 
+    def _schedule_source_text_changed(self) -> None:
+        if bool(getattr(self, "_loading_text", False)):
+            return
+        self._source_text_update_pending = True
+        if is_input_method_composing(self._editor):
+            self._source_text_update_timer.stop()
+            return
+        # 附件扫描和输出区布局不在按键/选词事件中执行，连续输入只整理一次。
+        self._source_text_update_timer.start()
+
+    def _on_editor_composition_changed(self, composing: bool) -> None:
+        shortcut = getattr(self, "_esc_shortcut", None)
+        if shortcut is not None:
+            shortcut.setEnabled(not composing)
+        if composing:
+            self._source_text_update_timer.stop()
+        elif self._source_text_update_pending:
+            self._source_text_update_timer.start()
+
     def _on_source_text_changed(self) -> None:
+        if is_input_method_composing(getattr(self, "_editor", None)):
+            return
+        self._source_text_update_pending = False
         if bool(getattr(self, "_loading_text", False)):
             return
         if (
@@ -2120,9 +2153,13 @@ class OcrTextPanel(
             except Exception:
                 pass
 
+    def _close_from_escape(self) -> None:
+        if not is_input_method_composing(getattr(self, "_editor", None)):
+            self.close()
+
     def keyPressEvent(self, event) -> None:
         if int(event.key()) == int(Qt.Key.Key_Escape):
-            self.close()
+            self._close_from_escape()
             event.accept()
             return
         super().keyPressEvent(event)
@@ -2197,6 +2234,15 @@ class OcrTextPanel(
             elif t == QEvent.Type.Leave:
                 single_shot_scoped(120, self, self._hide_floating_window_buttons_if_outside_input)
 
+        if (
+            t in {QEvent.Type.KeyPress, QEvent.Type.ShortcutOverride}
+            and is_input_method_composing(getattr(self, "_editor", None))
+            and event.key() in {Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Escape}
+        ):
+            if t == QEvent.Type.ShortcutOverride:
+                event.accept()
+                return True
+            return False
         if t in {QEvent.Type.KeyPress, QEvent.Type.ShortcutOverride} and int(event.key()) == int(Qt.Key.Key_Escape):
             self.close()
             event.accept()

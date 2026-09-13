@@ -309,6 +309,7 @@ def test_chatgpt_web2api_payload_adds_image_friendly_upstream_timeouts():
     assert payload["fallback_fetch_interval_sec"] == 5
     assert payload["fallback_fetch_stable_after_text_attempts"] == 3
     assert payload["localize_generated_images"] is True
+    assert payload["stream_snapshot_replacements"] is True
     assert payload["enable_conversation_append"] is False
     assert worker._chat_timeout(60) == 420
 
@@ -680,6 +681,60 @@ def test_stream_with_glm_messages_replaces_prefix_suffix_gap_snapshot():
         partial_text,
         OcrTranslationWorker.STREAM_REPLACE_MARKER + full_text,
     ]
+
+
+def test_chatgpt_snapshot_replacement_updates_both_stream_consumers(monkeypatch):
+    partial = "今日 AI 新闻汇总\n\n第一条新闻。"
+    complete = "# 今日 AI 新闻汇总\n\n第一条新闻。\n第二条新闻。"
+
+    class FakeSignal:
+        def __init__(self):
+            self.values = []
+
+        def emit(self, value):
+            self.values.append(value)
+
+    for method_name, argument in (
+        ("_stream_with_glm_messages", [{"role": "user", "content": "测试流式修正"}]),
+        ("_stream_with_glm", "测试流式修正"),
+    ):
+        worker = _worker(model_config={
+            "model_type": "chatgpt_web", "base_url": "http://127.0.0.1:8082",
+            "model_name": "gpt-5-5-thinking",
+        })
+        worker.translation_delta = FakeSignal()
+        worker.reasoning_delta = FakeSignal()
+        for provider in ("hunyuan", "gemini_web2api", "chatgpt_web2api"):
+            monkeypatch.setattr(worker, f"_ensure_local_{provider}_server", lambda: False)
+            monkeypatch.setattr(worker, f"_release_local_{provider}_server", lambda active: None)
+        monkeypatch.setattr(worker, "_request", lambda *args, **kwargs: object())
+        events = [
+            {"choices": [{"delta": {"content": partial}}]},
+            {"choices": [{"message": {"content": complete}, "deepcat_replace": True}]},
+            {"choices": [{"message": {"content": complete}, "deepcat_replace": True}]},
+            {"choices": [{"delta": {"content": "\n结束。"}}]},
+        ]
+        monkeypatch.setattr(worker, "_iter_sse_json", lambda response: iter(events))
+
+        result = getattr(worker, method_name)(argument)
+
+        assert result == complete + "\n结束。"
+        assert worker.translation_delta.values == [
+            partial, OcrTranslationWorker.STREAM_REPLACE_MARKER + complete, "\n结束。",
+        ]
+
+
+def test_chatgpt_snapshot_replacement_can_clear_retracted_text():
+    worker = _worker()
+    emissions = []
+    worker.translation_delta = SimpleNamespace(emit=emissions.append)
+    chunks = ["已撤回的内容"]
+
+    worker._consume_chat_completion_stream_text(chunks, "", is_delta=False, replace=True)
+    worker._consume_chat_completion_stream_text(chunks, "更正内容", is_delta=True)
+
+    assert "".join(chunks) == "更正内容"
+    assert emissions == [OcrTranslationWorker.STREAM_REPLACE_MARKER, "更正内容"]
 
 
 def test_agnes_message_stream_preserves_repeated_markdown_and_paragraph_breaks():

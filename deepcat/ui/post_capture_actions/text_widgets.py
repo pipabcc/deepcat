@@ -71,17 +71,61 @@ class ExpandIconButton(QPushButton):
         painter.end()
 
 
+def is_input_method_composing(editor: QTextEdit | None) -> bool:
+    check = getattr(editor, "is_composing", None)
+    return bool(check()) if callable(check) else False
+
+
 class PremiumTextEdit(QTextEdit):
     files_pasted = pyqtSignal(list)
     image_pasted = pyqtSignal(str)
     at_triggered = pyqtSignal()
     exit_requested = pyqtSignal()
+    composition_changed = pyqtSignal(bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setAcceptDrops(True)
         import time
         self._init_time = time.time()
+        self._ime_preedit_active = False
+        self._handling_input_method_event = False
+
+    def is_composing(self) -> bool:
+        return bool(
+            getattr(self, "_ime_preedit_active", False)
+            or getattr(self, "_handling_input_method_event", False)
+        )
+
+    def inputMethodEvent(self, event) -> None:
+        was_composing = self.is_composing()
+        self._ime_preedit_active = bool(event.preeditString())
+        self._handling_input_method_event = True
+        if not was_composing:
+            self.composition_changed.emit(True)
+        try:
+            # 上屏会同步触发 textChanged；直到 Qt 处理完本次输入法事件才恢复界面刷新。
+            super().inputMethodEvent(event)
+        finally:
+            self._handling_input_method_event = False
+            if not self._ime_preedit_active:
+                self.composition_changed.emit(False)
+
+    def focusOutEvent(self, event) -> None:
+        super().focusOutEvent(event)
+        if self._ime_preedit_active:
+            self._ime_preedit_active = False
+            self.composition_changed.emit(False)
+
+    def event(self, event) -> bool:
+        if (
+            event.type() == QEvent.Type.ShortcutOverride
+            and self.is_composing()
+            and event.key() in {Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Escape}
+        ):
+            event.accept()
+            return True
+        return super().event(event)
 
     def dragEnterEvent(self, event) -> None:
         if event.mimeData().hasUrls():
@@ -155,6 +199,9 @@ class PremiumTextEdit(QTextEdit):
         super().insertFromMimeData(source)
 
     def keyPressEvent(self, event) -> None:
+        if self.is_composing():
+            super().keyPressEvent(event)
+            return
         import time
         if int(event.key()) == int(Qt.Key.Key_Escape):
             self.exit_requested.emit()

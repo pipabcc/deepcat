@@ -16,6 +16,7 @@ from deepcat.utils.log_settings import DEFAULT_LOG_SETTINGS, normalize_log_setti
 from deepcat.utils.logger import get_logger
 from deepcat.utils.paths import get_app_dir, get_files_dir
 from deepcat.utils.secret_store import protect_text, unprotect_text
+from deepcat.chatgpt_models import DEFAULT_CHATGPT_WEB_MODEL, upgrade_legacy_chatgpt_model
 
 
 logger = get_logger("deepcat.settings_store")
@@ -450,7 +451,7 @@ BUILTIN_MODEL_CATALOG: dict[str, dict[str, Any]] = {
     },
     "ChatGPT Web": {
         "base_url": "http://127.0.0.1:8082",
-        "model_name": "gpt-5-3",
+        "model_name": DEFAULT_CHATGPT_WEB_MODEL,
         "api_key": "",
         "use_proxy": False,
         "model_type": "chatgpt_web",
@@ -459,6 +460,14 @@ BUILTIN_MODEL_CATALOG: dict[str, dict[str, Any]] = {
     "ChatGPT Web 生图": {
         "base_url": "http://127.0.0.1:8082/v1/images/generations",
         "model_name": "gpt-image-2",
+        "api_key": "",
+        "use_proxy": False,
+        "model_type": "openai_images",
+        "provider": "ChatGPT Web",
+    },
+    "ChatGPT Web 生图 2.5": {
+        "base_url": "http://127.0.0.1:8082/v1/images/generations",
+        "model_name": "gpt-image-2.5",
         "api_key": "",
         "use_proxy": False,
         "model_type": "openai_images",
@@ -1045,6 +1054,20 @@ def normalize_later_read_settings(v: Any) -> dict[str, Any]:
     }
 
 
+def _upgrade_local_chatgpt_model_configs(configs: dict[str, dict[str, Any]]) -> None:
+    """保留用户的模型备注和登录态，仅迁移本地服务已经退下目录的型号。"""
+    for cfg in configs.values():
+        if cfg.get("model_type") != "chatgpt_web":
+            continue
+        base_url = str(cfg.get("base_url") or "").strip()
+        try:
+            host = urlparse(base_url if "://" in base_url else f"http://{base_url}").hostname if base_url else "localhost"
+        except ValueError:
+            continue
+        if str(host or "").lower() in {"127.0.0.1", "localhost", "::1"}:
+            cfg["model_name"] = upgrade_legacy_chatgpt_model(str(cfg.get("model_name") or ""))
+
+
 def normalize_translator_settings(v: Any) -> dict[str, Any]:
     default = default_translator_settings()
     incoming = dict(v) if isinstance(v, dict) else {}
@@ -1112,6 +1135,7 @@ def normalize_translator_settings(v: Any) -> dict[str, Any]:
             infer_translator_model_provider(str(name), {**cfg, **merged}),
         )
         merged_configs[str(name)] = merged
+    _upgrade_local_chatgpt_model_configs(merged_configs)
     legacy_current_model = TRANSLATOR_MODEL_ALIASES.get(
         _coerce_str(incoming.get("current_model"), str(default["current_model"])),
         _coerce_str(incoming.get("current_model"), str(default["current_model"])),

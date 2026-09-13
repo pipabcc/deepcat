@@ -249,12 +249,18 @@ def _idle_stop() -> None:
 def _stop_server_locked() -> None:
     global _in_process_server, _running_use_proxy, _running_proxy_url, _running_auth_digest
     if _in_process_server is not None:
+        from deepcat.chatgpt_web2api import clear_sentinel_prefetch
+
+        clear_sentinel_prefetch()
         try:
             _in_process_server.shutdown()
             _in_process_server.server_close()
         except Exception:
             pass
         _in_process_server = None
+    from deepcat.chatgpt_transport import clear_session_cache
+
+    clear_session_cache()
     _running_use_proxy = None
     _running_proxy_url = None
     _running_auth_digest = None

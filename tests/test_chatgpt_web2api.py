@@ -678,8 +678,9 @@ class TestChatGPTWeb2API(unittest.TestCase):
                 model_id="gpt-5-3",
             )
 
-        def fake_warmup(session, config, access_token, device_id, dynamic_headers):
+        def fake_warmup(session, config, access_token, device_id, dynamic_headers, **_kwargs):
             captured["warmed"] = (access_token, device_id)
+            return False
 
         def fake_upload(session, config, access_token, device_id, dynamic_headers, images):
             captured["upload_count"] = len(images)
@@ -2916,7 +2917,7 @@ class TestChatGPTWeb2API(unittest.TestCase):
 
         self.assertEqual(delta, "\nOpenAI\nBroadcom\n\n2. 谷歌 AI 人才继续流向 Anthropic")
 
-    def test_iter_delta_events_does_not_mark_snapshot_for_non_prefix_replace(self) -> None:
+    def test_iter_delta_events_does_not_repeat_prefix_when_entity_finishes(self) -> None:
         partial = "今日 AI 新闻\n涉及实体：\n\ue200entity\ue202[\"company\",\"OpenAI\""
         full = "今日 AI 新闻\n涉及实体：\nOpenAI\nBroadcom\n\n2. 谷歌 AI 人才继续流向 Anthropic"
         events = [
@@ -2955,8 +2956,8 @@ class TestChatGPTWeb2API(unittest.TestCase):
         chunks = list(server_mod.iter_delta_events(events, {}))
 
         self.assertEqual(len(chunks), 2)
-        self.assertEqual(chunks[0].text, partial)
-        self.assertEqual(chunks[1].text, full)
+        self.assertEqual(chunks[0].text, "今日 AI 新闻\n涉及实体：\n")
+        self.assertEqual("".join(chunk.text for chunk in chunks), full)
         self.assertIsNone(chunks[1].snapshot_text)
 
     def test_fetch_conversation_filters_by_assistant_message_id(self) -> None:
@@ -3484,7 +3485,7 @@ class TestChatGPTWeb2API(unittest.TestCase):
         def fake_prepare(messages, model=None, request_options=None):
             return server_mod.PreparedChatGPTRequest(
                 session=_Session(),
-                config={"base_url": "https://chatgpt.com", "timezone": "Asia/Shanghai", "timezone_offset_min": -480},
+                config={"base_url": "https://chatgpt.com", "timezone": "Asia/Shanghai", "timezone_offset_min": -480, **(request_options or {})},
                 prompt_messages=messages,
                 conversation_id=None,
                 parent_message_id="parent-msg",
@@ -3510,7 +3511,7 @@ class TestChatGPTWeb2API(unittest.TestCase):
                 server_mod.stream_chatgpt_web(
                     [{"role": "user", "content": "今日AI新闻"}],
                     "gpt-5-5-thinking",
-                    {},
+                    {"buffer_stream_until_handoff": True},
                 )
             )
         finally:
@@ -3565,7 +3566,7 @@ class TestChatGPTWeb2API(unittest.TestCase):
         def fake_prepare(messages, model=None, request_options=None):
             return server_mod.PreparedChatGPTRequest(
                 session=_Session(),
-                config={"base_url": "https://chatgpt.com", "timezone": "Asia/Shanghai", "timezone_offset_min": -480},
+                config={"base_url": "https://chatgpt.com", "timezone": "Asia/Shanghai", "timezone_offset_min": -480, **(request_options or {})},
                 prompt_messages=messages,
                 conversation_id=None,
                 parent_message_id="parent-msg",
@@ -3589,7 +3590,7 @@ class TestChatGPTWeb2API(unittest.TestCase):
                 server_mod.stream_chatgpt_web(
                     [{"role": "user", "content": "继续再写一篇"}],
                     "gpt-5-5-thinking",
-                    {},
+                    {"buffer_stream_until_handoff": True, "final_fetch_after_stream_completion": True},
                 )
             )
         finally:
@@ -3654,7 +3655,7 @@ class TestChatGPTWeb2API(unittest.TestCase):
         def fake_prepare(messages, model=None, request_options=None):
             return server_mod.PreparedChatGPTRequest(
                 session=_Session(),
-                config={"base_url": "https://chatgpt.com", "timezone": "Asia/Shanghai", "timezone_offset_min": -480},
+                config={"base_url": "https://chatgpt.com", "timezone": "Asia/Shanghai", "timezone_offset_min": -480, **(request_options or {})},
                 prompt_messages=messages,
                 conversation_id=None,
                 parent_message_id="parent-msg",
@@ -3675,7 +3676,7 @@ class TestChatGPTWeb2API(unittest.TestCase):
                 server_mod.stream_chatgpt_web(
                     [{"role": "user", "content": "ai时代如何学习"}],
                     "gpt-5-5-thinking",
-                    {},
+                    {"buffer_stream_until_handoff": True, "final_fetch_after_stream_completion": True},
                 )
             )
         finally:
@@ -3742,7 +3743,7 @@ class TestChatGPTWeb2API(unittest.TestCase):
         def fake_prepare(messages, model=None, request_options=None):
             return server_mod.PreparedChatGPTRequest(
                 session=_Session(),
-                config={"base_url": "https://chatgpt.com", "timezone": "Asia/Shanghai", "timezone_offset_min": -480},
+                config={"base_url": "https://chatgpt.com", "timezone": "Asia/Shanghai", "timezone_offset_min": -480, **(request_options or {})},
                 prompt_messages=messages,
                 conversation_id=None,
                 parent_message_id="parent-msg",
@@ -3769,7 +3770,7 @@ class TestChatGPTWeb2API(unittest.TestCase):
                 server_mod.stream_chatgpt_web(
                     [{"role": "user", "content": "今日 AI 新闻"}],
                     "gpt-5-5-thinking",
-                    {},
+                    {"buffer_stream_until_handoff": True, "final_fetch_after_stream_completion": True},
                 )
             )
         finally:
@@ -3830,7 +3831,7 @@ class TestChatGPTWeb2API(unittest.TestCase):
         def fake_prepare(messages, model=None, request_options=None):
             return server_mod.PreparedChatGPTRequest(
                 session=_Session(),
-                config={"base_url": "https://chatgpt.com", "timezone": "Asia/Shanghai", "timezone_offset_min": -480},
+                config={"base_url": "https://chatgpt.com", "timezone": "Asia/Shanghai", "timezone_offset_min": -480, **(request_options or {})},
                 prompt_messages=messages,
                 conversation_id=None,
                 parent_message_id="parent-msg",
@@ -3851,7 +3852,7 @@ class TestChatGPTWeb2API(unittest.TestCase):
                 server_mod.stream_chatgpt_web(
                     [{"role": "user", "content": "今日 AI 新闻"}],
                     "gpt-5-5-thinking",
-                    {},
+                    {"buffer_stream_until_handoff": True, "final_fetch_after_stream_completion": True},
                 )
             )
         finally:
@@ -4239,7 +4240,7 @@ class TestChatGPTWeb2API(unittest.TestCase):
         def fake_prepare(messages, model=None, request_options=None):
             return server_mod.PreparedChatGPTRequest(
                 session=_Session(),
-                config={"base_url": "https://chatgpt.com", "timezone": "Asia/Shanghai", "timezone_offset_min": -480},
+                config={"base_url": "https://chatgpt.com", "timezone": "Asia/Shanghai", "timezone_offset_min": -480, **(request_options or {})},
                 prompt_messages=messages,
                 conversation_id=None,
                 parent_message_id="parent-msg",
@@ -4267,7 +4268,7 @@ class TestChatGPTWeb2API(unittest.TestCase):
                 server_mod.stream_chatgpt_web(
                     [{"role": "user", "content": "ai时代如何学习"}],
                     "gpt-5-5-thinking",
-                    {},
+                    {"stream_snapshot_replacements": True},
                 )
             )
         finally:
@@ -4490,7 +4491,7 @@ class TestChatGPTWeb2API(unittest.TestCase):
         def fake_prepare(messages, model=None, request_options=None):
             return server_mod.PreparedChatGPTRequest(
                 session=_Session(),
-                config={"base_url": "https://chatgpt.com", "timezone": "Asia/Shanghai", "timezone_offset_min": -480},
+                config={"base_url": "https://chatgpt.com", "timezone": "Asia/Shanghai", "timezone_offset_min": -480, **(request_options or {})},
                 prompt_messages=messages,
                 conversation_id=None,
                 parent_message_id="parent-msg",
@@ -4518,7 +4519,7 @@ class TestChatGPTWeb2API(unittest.TestCase):
                 server_mod.stream_chatgpt_web(
                     [{"role": "user", "content": "今日AI新闻"}],
                     "gpt-5-5-thinking",
-                    {},
+                    {"stream_snapshot_replacements": True},
                 )
             )
         finally:
@@ -4532,6 +4533,7 @@ class TestChatGPTWeb2API(unittest.TestCase):
         self.assertEqual(len(chunks), 2)
         self.assertEqual(chunks[0].text, corrupted_text)
         self.assertEqual(chunks[1].text, clean_text)
+        self.assertEqual(chunks[1].snapshot_text, clean_text)
         self.assertEqual(fetch_calls[0]["assistant_message_id"], "assistant-msg")
 
     def test_extract_text_incremental_keeps_bare_value_appends_when_final_patch_joins_parts(self) -> None:
@@ -4636,7 +4638,7 @@ class TestChatGPTWeb2API(unittest.TestCase):
         def fake_prepare(messages, model=None, request_options=None):
             return server_mod.PreparedChatGPTRequest(
                 session=_Session(),
-                config={"base_url": "https://chatgpt.com", "timezone": "Asia/Shanghai", "timezone_offset_min": -480},
+                config={"base_url": "https://chatgpt.com", "timezone": "Asia/Shanghai", "timezone_offset_min": -480, **(request_options or {})},
                 prompt_messages=messages,
                 conversation_id=None,
                 parent_message_id="parent-msg",
@@ -4660,7 +4662,7 @@ class TestChatGPTWeb2API(unittest.TestCase):
                 server_mod.stream_chatgpt_web(
                     [{"role": "user", "content": "测试"}],
                     "gpt-5-5-thinking",
-                    {},
+                    {"buffer_stream_until_handoff": True, "final_fetch_after_stream_completion": True},
                 )
             )
         finally:
@@ -4828,7 +4830,7 @@ class TestChatGPTWeb2API(unittest.TestCase):
 
         self.assertEqual(exc.status_code, 429)
         self.assertEqual(exc.error_code, "quota_or_rate_limited")
-        self.assertIn("额度/限流", str(exc))
+        self.assertIn("使用上限或限流", str(exc))
         self.assertIn("Retry-After: 120", str(exc))
 
     def test_classifies_conversation_inaccessible_as_model_limited(self) -> None:
@@ -4928,7 +4930,9 @@ class TestChatGPTWeb2API(unittest.TestCase):
             with urllib.request.urlopen(f"http://{host}:{port}/v1/models", timeout=5) as response:
                 models_payload = json.loads(response.read().decode("utf-8"))
             self.assertEqual(models_payload["object"], "list")
-            self.assertIn("gpt-5-3", {item["id"] for item in models_payload["data"]})
+            model_ids = {item["id"] for item in models_payload["data"]}
+            self.assertTrue({"gpt-5-5-thinking", "gpt-5-6", "gpt-6"}.issubset(model_ids))
+            self.assertNotIn("gpt-5-3", model_ids)
 
             body = json.dumps(
                 {"model": "gpt-5.5", "messages": [{"role": "user", "content": "Hello"}]},
@@ -5415,7 +5419,9 @@ class TestChatGPTWeb2API(unittest.TestCase):
 
         def fake_stream(messages, model=None, request_options=None):
             yield server_mod.ChatGPTWebCompletion(partial_text, "gpt-5-5-thinking", "conv-1", "assistant-msg")
-            yield server_mod.ChatGPTWebCompletion(full_text, "gpt-5-5-thinking", "conv-1", "assistant-msg")
+            yield server_mod.ChatGPTWebCompletion(
+                full_text, "gpt-5-5-thinking", "conv-1", "assistant-msg", snapshot_text=full_text
+            )
 
         def fake_get_history_hash(history):
             captured["assistant_content"] = history[-1]["content"]
@@ -5432,6 +5438,7 @@ class TestChatGPTWeb2API(unittest.TestCase):
                     {
                         "model": "gpt-5-5-thinking",
                         "stream": True,
+                        "stream_snapshot_replacements": True,
                         "enable_conversation_append": True,
                         "messages": [{"role": "user", "content": "ai时代如何学习"}],
                     },
@@ -5847,6 +5854,161 @@ class TestChatGPTWeb2API(unittest.TestCase):
         text6 = "\ue200navlist\ue202今日AI热点新闻\ue202turn0news3,turn0news10\ue201正文开始。"
         res6 = server_mod._apply_citation_references(text6, [])
         self.assertEqual(res6, "正文开始。")
+
+    # ------------------------------------------------------------------
+    # 首字延迟优化：Sentinel 令牌预取 / 登录态缓存 / 连接池
+    # ------------------------------------------------------------------
+
+    class _StubSession:
+        """最小会话桩：只提供 warmup 需要的 headers / close。"""
+
+        def __init__(self, headers: dict[str, str] | None = None) -> None:
+            self.headers = dict(headers or {"Cookie": "c=1", "User-Agent": "ua"})
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    def test_warmup_reuses_prefetched_sentinel_token(self) -> None:
+        key = "prefetch-key-test"
+        session = self._StubSession()
+        config = {"base_url": "https://chatgpt.com"}
+        with server_mod._sentinel_prefetch_lock:
+            server_mod._sentinel_prefetch.pop(key, None)
+        server_mod._sentinel_prefetch_store(
+            key, {"openai-sentinel-chat-requirements-token": "token-abc"},
+        )
+        try:
+            headers: dict[str, str] = {}
+            original_fetch = server_mod._fetch_sentinel_token
+            original_prefetch = server_mod._prefetch_sentinel_async
+
+            def fail_fetch(*_args: object, **_kwargs: object) -> bool:
+                raise AssertionError("命中预取令牌时不应再跑一遍验证链")
+
+            def noop_prefetch(*_args: object, **_kwargs: object) -> None:
+                return None
+
+            server_mod._fetch_sentinel_token = fail_fetch  # type: ignore[assignment]
+            server_mod._prefetch_sentinel_async = noop_prefetch  # type: ignore[assignment]
+            try:
+                reused = server_mod.warmup_chat_requirements(
+                    session, config, "access", "device", headers, state_key=key,
+                )
+            finally:
+                server_mod._fetch_sentinel_token = original_fetch  # type: ignore[assignment]
+                server_mod._prefetch_sentinel_async = original_prefetch  # type: ignore[assignment]
+            self.assertTrue(reused)
+            self.assertEqual(headers.get("openai-sentinel-chat-requirements-token"), "token-abc")
+        finally:
+            with server_mod._sentinel_prefetch_lock:
+                server_mod._sentinel_prefetch.pop(key, None)
+
+    def test_prefetched_sentinel_token_is_single_use(self) -> None:
+        key = "prefetch-single-use"
+        session = self._StubSession()
+        config = {"base_url": "https://chatgpt.com"}
+        with server_mod._sentinel_prefetch_lock:
+            server_mod._sentinel_prefetch.pop(key, None)
+        server_mod._sentinel_prefetch_store(
+            key, {"openai-sentinel-chat-requirements-token": "token-once"},
+        )
+        first: dict[str, str] = {}
+        second: dict[str, str] = {}
+        calls = {"n": 0}
+
+        def fake_fetch(_session: object, _config: object, _token: object, _device: object, headers: dict[str, str]) -> bool:
+            calls["n"] += 1
+            headers["openai-sentinel-chat-requirements-token"] = "token-fresh"
+            return True
+
+        original_fetch = server_mod._fetch_sentinel_token
+        original_prefetch = server_mod._prefetch_sentinel_async
+        server_mod._fetch_sentinel_token = fake_fetch  # type: ignore[assignment]
+        server_mod._prefetch_sentinel_async = lambda *_a, **_k: None  # type: ignore[assignment]
+        try:
+            reused_first = server_mod.warmup_chat_requirements(
+                session, config, "access", "device", first, state_key=key,
+            )
+            reused_second = server_mod.warmup_chat_requirements(
+                session, config, "access", "device", second, state_key=key,
+            )
+        finally:
+            server_mod._fetch_sentinel_token = original_fetch  # type: ignore[assignment]
+            server_mod._prefetch_sentinel_async = original_prefetch  # type: ignore[assignment]
+            with server_mod._sentinel_prefetch_lock:
+                server_mod._sentinel_prefetch.pop(key, None)
+        self.assertTrue(reused_first)
+        self.assertFalse(reused_second)
+        self.assertEqual(first.get("openai-sentinel-chat-requirements-token"), "token-once")
+        self.assertEqual(second.get("openai-sentinel-chat-requirements-token"), "token-fresh")
+        self.assertEqual(calls["n"], 1)
+
+    def test_session_pool_reuses_same_session(self) -> None:
+        from deepcat import chatgpt_transport as transport
+
+        transport.clear_session_cache()
+        stub = self._StubSession()
+        creations = []
+
+        def factory():
+            creations.append(True)
+            return stub
+
+        try:
+            first = transport.acquire_session("reuse-test", factory)
+            first.close()
+            second = transport.acquire_session("reuse-test", factory)
+            self.assertIs(second.headers, stub.headers)
+            self.assertEqual(len(creations), 1)
+            second.close()
+        finally:
+            transport.clear_session_cache()
+
+    def test_expired_pooled_session_is_dropped(self) -> None:
+        from unittest.mock import patch
+        from deepcat import chatgpt_transport as transport
+        from deepcat.utils.http_client_pool import HttpClientPool
+
+        pool = HttpClientPool(idle_seconds=0)
+        stale = self._StubSession()
+        fresh = self._StubSession()
+        try:
+            with patch.object(transport, "_pool", pool):
+                first = transport.acquire_session("expiry-test", lambda: stale)
+                first.close()
+                second = transport.acquire_session("expiry-test", lambda: fresh)
+                self.assertTrue(stale.closed, "过期连接应关闭")
+                self.assertIs(second.headers, fresh.headers)
+                second.close()
+        finally:
+            pool.close()
+
+    def test_resolve_session_info_uses_cache(self) -> None:
+        from unittest.mock import patch
+        from deepcat import chatgpt_transport as transport
+
+        transport.clear_session_cache()
+        config = {"base_url": "https://chatgpt.com", "api_key": "Bearer cache-test"}
+        auth = server_mod.parse_auth_value(config["api_key"])
+        stub = self._StubSession()
+        calls = []
+
+        def checked(*args):
+            calls.append(True)
+            return {"user": {"id": "u-1"}, "accessToken": "access-fresh"}, "access-fresh", ""
+
+        try:
+            with patch.object(server_mod, "make_session", return_value=stub), patch.object(server_mod, "get_session_info", checked):
+                first, info_a, token_a = server_mod._acquire_authenticated_session(config, auth)
+                first.close()
+                second, info_b, token_b = server_mod._acquire_authenticated_session(config, auth)
+                second.close()
+            self.assertEqual(len(calls), 1, "命中缓存后不应重复检查登录态")
+            self.assertEqual(token_a, token_b)
+            self.assertEqual(info_a, info_b)
+        finally:
+            transport.clear_session_cache()
 
 
 if __name__ == "__main__":
