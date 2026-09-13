@@ -40,7 +40,10 @@ def test_scan_finds_cleanup_large_and_duplicate_files(tmp_path, monkeypatch):
     )
 
     result = report.drives[0]
-    assert any(candidate.kind == "temp" and candidate.risk == SAFE for candidate in result.candidates)
+    # 位置规则（P0 修复）：tmp_path 位于工程盘 D:\ 下、不在受管清理根内，
+    # 因此名为 temp 的目录只作为"待确认"候选项出现，不再自动判为 SAFE。
+    # 受管根内仍判 SAFE，见 test_managed_temp_root_still_safe。
+    assert any(candidate.kind == "temp" and candidate.risk == CONFIRM_REQUIRED for candidate in result.candidates)
     assert any(entry.path.endswith("large.bin") for entry in result.large_files)
     assert any(set(Path(p).name for p in group.paths) == {"copy1.bin", "copy2.bin"} for group in result.duplicate_groups)
 
@@ -832,3 +835,172 @@ def test_uninstall_rejects_system_software():
 
     assert report.items[0].status == "Rejected"
     assert "系统软件" in report.items[0].message
+
+
+# --- P0 回归：磁盘清理器不得永久删除用户真实目录 -----------------------------
+# 缺陷链路（修复前）：
+#   1. 任意名为 temp/tmp 的目录被 _classify_directory 判为 SAFE；
+#   2. named_temp_dir 在 _candidate_allowed_by_cleaner 白名单内 → allowed_by_cleaner=True；
+#   3. _candidate_can_fast_delete 只要文本含 "temp"/"cache" 就允许绕过回收站永久删除；
+#   4. _is_forbidden_broad_path 只做精确等值匹配，不含桌面/文档等用户目录。
+# 结果：D:\Projects\temp 这类目录会被建议清理并在勾选后被永久清空且不可恢复。
+
+
+def _redirect_cleanup_roots(monkeypatch, tmp_path: Path) -> None:
+    """把所有受管清理根重定向到 tmp_path 内部，用于构造"非受管位置"。
+
+    必须这样做：pytest 的 tmp_path 本身位于 %LOCALAPPDATA%\\Temp 之下，
+    直接使用真实环境时它的所有子目录都算"受管"，无法构造反例。
+    """
+    users = tmp_path / "Users" / "tester"
+    local = users / "AppData" / "Local"
+    env = {
+        "SystemRoot": str(tmp_path / "Windows"),
+        "LOCALAPPDATA": str(local),
+        "APPDATA": str(users / "AppData" / "Roaming"),
+        "PROGRAMDATA": str(tmp_path / "ProgramData"),
+        "USERPROFILE": str(users),
+        "TEMP": str(local / "Temp"),
+        "TMP": str(local / "Temp"),
+    }
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+
+def _make_candidate(path: Path, *, rule: str, risk: str = SAFE, kind: str = "temp") -> CleanupCandidate:
+    return CleanupCandidate(
+        id="cand_1",
+        path=str(path),
+        size_bytes=1024,
+        kind=kind,
+        risk=risk,
+        cleanup_mode=CONTENTS,
+        source_rule=rule,
+        last_write_time="",
+        allowed_by_cleaner=risk == SAFE,
+        reason="test",
+    )
+
+
+def test_project_temp_dir_is_not_treated_as_safe(tmp_path, monkeypatch):
+    _redirect_cleanup_roots(monkeypatch, tmp_path)
+    project_temp = tmp_path / "Projects" / "temp"
+    project_temp.mkdir(parents=True)
+
+    classified = drive_cleaner._classify_directory(project_temp, "temp")
+
+    assert classified is not None
+    assert classified[3] == CONFIRM_REQUIRED
+    assert not drive_cleaner._candidate_allowed_by_cleaner(project_temp, classified[0], classified[1], classified[2])
+
+
+def test_project_logs_dir_is_not_treated_as_safe(tmp_path, monkeypatch):
+    _redirect_cleanup_roots(monkeypatch, tmp_path)
+    project_logs = tmp_path / "Projects" / "MyApp" / "logs"
+    project_logs.mkdir(parents=True)
+
+    classified = drive_cleaner._classify_directory(project_logs, "logs")
+
+    assert classified is not None
+    assert classified[3] == CONFIRM_REQUIRED
+    assert not drive_cleaner._candidate_allowed_by_cleaner(project_logs, classified[0], classified[1], classified[2])
+
+
+def test_managed_temp_root_still_safe(tmp_path, monkeypatch):
+    """正向对照：受管根内的临时目录仍判为 SAFE，保证正常清理能力不退化。"""
+    _redirect_cleanup_roots(monkeypatch, tmp_path)
+    managed_temp = Path(os.environ["TEMP"]) / "nested" / "temp"
+    managed_temp.mkdir(parents=True)
+
+    classified = drive_cleaner._classify_directory(managed_temp, "temp")
+
+    assert classified is not None
+    assert classified[3] == SAFE
+    assert drive_cleaner._candidate_allowed_by_cleaner(managed_temp, classified[0], classified[1], classified[2])
+
+
+def test_named_temp_dir_is_never_permanently_deleted(tmp_path, monkeypatch):
+    """即使显式选择"永久删除"，名称匹配得到的临时目录也只会移入回收站。"""
+    _redirect_cleanup_roots(monkeypatch, tmp_path)
+    unmanaged = tmp_path / "Projects" / "temp"
+    managed = Path(os.environ["TEMP"]) / "temp"
+    unmanaged.mkdir(parents=True)
+    managed.mkdir(parents=True)
+
+    # 名字匹配规则 → 永不直删
+    assert drive_cleaner._effective_delete_mode(_make_candidate(unmanaged, rule="named_temp_dir"), "permanent") == "recycle"
+    assert (
+        drive_cleaner._effective_delete_mode(
+            _make_candidate(unmanaged, rule="named_temp_dir_unmanaged", risk=CONFIRM_REQUIRED), "permanent"
+        )
+        == "recycle"
+    )
+    # 受管根内、由显式环境变量规则识别的真实临时目录 → 允许直删
+    assert (
+        drive_cleaner._effective_delete_mode(
+            _make_candidate(managed, rule="user_temp_windows", kind="user_temp"), "permanent"
+        )
+        == "permanent"
+    )
+    # 未请求永久删除时一律回收站
+    assert (
+        drive_cleaner._effective_delete_mode(
+            _make_candidate(managed, rule="user_temp_windows", kind="user_temp"), "recycle"
+        )
+        == "recycle"
+    )
+
+
+def test_managed_rule_outside_managed_root_falls_back_to_recycle(tmp_path, monkeypatch):
+    """双重保险：规则命中白名单但路径不在受管根内时，退化为回收站删除。"""
+    _redirect_cleanup_roots(monkeypatch, tmp_path)
+    stray = tmp_path / "Projects" / "cache"
+    stray.mkdir(parents=True)
+
+    assert (
+        drive_cleaner._effective_delete_mode(_make_candidate(stray, rule="npm_cache", kind="dev_cache"), "permanent")
+        == "recycle"
+    )
+
+
+def test_scan_downgrades_unmanaged_project_temp_dir(tmp_path, monkeypatch):
+    """端到端：扫描工程目录时，其中的 temp 目录降级为待确认而不是"可安全清理"。"""
+    _redirect_cleanup_roots(monkeypatch, tmp_path)
+    target = tmp_path / "Projects" / "temp"
+    _write_bytes(target / "user-work.bin", 1024 * 1024 + 1)
+
+    report = scan_drives(
+        [str(tmp_path)],
+        min_candidate_size_mb=1,
+        min_large_file_size_mb=100,
+        min_duplicate_size_mb=100,
+        max_depth=4,
+        scan_modes=["cleanup"],
+    )
+
+    matches = [candidate for candidate in report.drives[0].candidates if Path(candidate.path).resolve() == target.resolve()]
+    assert matches, "仍应作为候选项出现，供用户确认后清理"
+    assert matches[0].risk == CONFIRM_REQUIRED
+    assert matches[0].allowed_by_cleaner is False
+
+
+def test_user_document_roots_are_protected(tmp_path, monkeypatch):
+    """桌面/文档等用户目录及其子目录即使名为 temp，也不得进入清理候选。"""
+    _redirect_cleanup_roots(monkeypatch, tmp_path)
+    desktop_temp = tmp_path / "Users" / "tester" / "Desktop" / "temp"
+    desktop_temp.mkdir(parents=True)
+
+    assert drive_cleaner._is_forbidden_broad_path(desktop_temp)
+    classified = drive_cleaner._classify_directory(desktop_temp, "temp")
+    assert classified is not None
+    assert classified[3] == drive_cleaner.AVOID
+    assert not drive_cleaner._candidate_allowed_by_cleaner(desktop_temp, "temp", CONTENTS, "named_temp_dir")
+
+
+def test_downloads_dir_still_cleanable_after_confirmation(tmp_path, monkeypatch):
+    """有意保留：下载目录仍是"确认后可清理"的目标，不受用户目录保护影响。"""
+    _redirect_cleanup_roots(monkeypatch, tmp_path)
+    downloads = tmp_path / "Users" / "tester" / "Downloads"
+    downloads.mkdir(parents=True)
+
+    assert not drive_cleaner._is_forbidden_broad_path(downloads)

@@ -109,20 +109,31 @@ def test_new_safe_rules_in_cleaner_whitelist(tmp_path):
     assert not dc._candidate_allowed_by_cleaner(path, "system_logs", dc.CONTENTS, "windows_logs")
 
 
-def test_classify_directory_recognizes_new_names(tmp_path):
-    gpu = dc._classify_directory(tmp_path / "D3DSCache", "d3dscache")
+def test_classify_directory_recognizes_new_names(tmp_path, monkeypatch):
+    # 受管根内（本例把 LOCALAPPDATA 指向 tmp_path 内部）：名称命中即 SAFE。
+    # 位置规则详见 drive_cleaner._is_within_managed_cleanup_root。
+    managed_local = tmp_path / "managed" / "Local"
+    monkeypatch.setenv("LOCALAPPDATA", str(managed_local))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "managed" / "me"))
+
+    gpu = dc._classify_directory(managed_local / "D3DSCache", "d3dscache")
     assert gpu is not None and gpu[0] == "gpu_cache" and gpu[3] == dc.SAFE
-    gpu_generic = dc._classify_directory(tmp_path / "GLCache", "glcache")
-    assert gpu_generic is not None and gpu_generic[0] == "gpu_cache"
+    gpu_generic = dc._classify_directory(managed_local / "GLCache", "glcache")
+    assert gpu_generic is not None and gpu_generic[0] == "gpu_cache" and gpu_generic[3] == dc.SAFE
     browser_gpu = dc._classify_directory(
         Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "User Data" / "Default" / "GPUCache",
         "gpucache",
     )
-    assert browser_gpu is not None and browser_gpu[0] == "browser_cache"
-    crash = dc._classify_directory(tmp_path / "Minidumps", "minidumps")
+    assert browser_gpu is not None and browser_gpu[0] == "browser_cache" and browser_gpu[3] == dc.SAFE
+    crash = dc._classify_directory(managed_local / "Minidumps", "minidumps")
     assert crash is not None and crash[0] == "crash_dump" and crash[3] == dc.SAFE
-    wer = dc._classify_directory(tmp_path / "ReportArchive", "reportarchive")
-    assert wer is not None and wer[0] == "error_reports"
+    wer = dc._classify_directory(managed_local / "ReportArchive", "reportarchive")
+    assert wer is not None and wer[0] == "error_reports" and wer[3] == dc.SAFE
+
+    # 非受管位置：同名目录必须降级为待确认，绝不允许被当作可安全清理项
+    outside = tmp_path / "Projects" / "D3DSCache"
+    downgraded = dc._classify_directory(outside, "d3dscache")
+    assert downgraded is not None and downgraded[0] == "gpu_cache" and downgraded[3] == dc.CONFIRM_REQUIRED
 
 
 def test_cleanup_scan_discovers_new_targets(tmp_path, monkeypatch):

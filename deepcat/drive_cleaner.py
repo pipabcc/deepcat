@@ -1940,10 +1940,87 @@ def _external_rule_kind(title: str, path: str, raw_type: str, risk: str) -> str:
     return "external_rule"
 
 
+# --- 受管清理根（P0 修复） -------------------------------------------------
+# 目录"名称"（temp/tmp/logs/cache 等）本身不足以证明它归系统或应用所有。
+# 改动前：任何名为 temp 的目录都会被判为 SAFE，且只要路径文本里含 "temp"/"cache"
+# 就允许绕过回收站永久删除，于是 D:\Projects\temp 这类用户真实目录会被清空且不可恢复。
+# 改动后：同名目录必须落在下列受管清理根内才允许判为 SAFE；
+# 位于任意用户/工程目录下的同名目录降级为 CONFIRM_REQUIRED，且永不进入永久删除通道。
+_MANAGED_CLEANUP_ROOT_ENV_VARS = (
+    "TEMP",
+    "TMP",
+    "SystemRoot",
+    "LOCALAPPDATA",
+    "APPDATA",
+    "PROGRAMDATA",
+)
+
+
+def _managed_cleanup_roots() -> list[Path]:
+    """返回本程序可管理的清理根：系统临时目录、用户/程序数据目录等。
+
+    直接读取环境变量而非 tempfile.gettempdir()，因为后者会把结果缓存到
+    tempfile.tempdir，环境变化后不再更新，会让位置判定失真。
+    """
+    roots: list[Path] = []
+    for name in _MANAGED_CLEANUP_ROOT_ENV_VARS:
+        raw = os.environ.get(name, "").strip()
+        if not raw:
+            continue
+        try:
+            roots.append(Path(raw))
+        except (OSError, ValueError):
+            continue
+    system_root = os.environ.get("SystemRoot", "").strip()
+    if system_root:
+        try:
+            roots.append(Path(system_root) / "Temp")
+        except (OSError, ValueError):
+            pass
+    if os.name != "nt":
+        # 非 Windows 平台（含 CI）没有 TEMP/TMP 时的常规临时根
+        roots.extend((Path("/tmp"), Path("/var/tmp")))
+    return roots
+
+
+def _is_within_managed_cleanup_root(path: Path | str) -> bool:
+    """判断目录是否位于受管清理根内，或直接位于某个盘符根目录下。
+
+    只接受"盘符根的直接子目录"（如 D:\\Temp、C:\\Logs），不接受更深层的任意嵌套，
+    以免把 D:\\Projects\\temp 这类用户目录误认为本程序拥有的临时目录。
+    """
+    try:
+        target = Path(path).resolve()
+    except OSError:
+        target = Path(path).absolute()
+    target_norm = _normcase(str(target)).rstrip("\\/")
+    if not target_norm:
+        return False
+
+    parent = target.parent
+    if parent == Path(parent.anchor):
+        # 盘符根的直接子目录（D:\Temp、C:\Logs 等）
+        return True
+
+    for root in _managed_cleanup_roots():
+        try:
+            root_resolved = root.resolve()
+        except OSError:
+            root_resolved = root.absolute()
+        root_norm = _normcase(str(root_resolved)).rstrip("\\/")
+        if not root_norm:
+            continue
+        if target_norm == root_norm or target_norm.startswith(root_norm + "\\"):
+            return True
+    return False
+
+
 def _classify_directory(path: Path, lower_name: str) -> Optional[tuple[str, str, str, str, str]]:
     normalized = str(path).lower().replace("/", "\\")
     if _is_forbidden_broad_path(path) or "\\.git" in normalized or normalized.endswith("\\.git") or _is_under_git_repo(path):
         return ("protected", CONTENTS, "protected_path", AVOID, "系统目录、源码仓库或配置主体不建议清理")
+    # 名称匹配只提供"疑似"判断；是否可信取决于位置，见 _is_within_managed_cleanup_root。
+    managed = _is_within_managed_cleanup_root(path)
     if lower_name in {"cache", "code cache", "cachestorage", ".cache"}:
         if "user data" in normalized or "chrom" in normalized or "edge" in normalized:
             return ("browser_cache", SELF, "browser_cache", SAFE, "浏览器缓存，关闭浏览器后通常可安全重建")
@@ -1951,14 +2028,24 @@ def _classify_directory(path: Path, lower_name: str) -> Optional[tuple[str, str,
     if lower_name in {"gpucache", "shadercache", "grshadercache", "gpcache", "d3dscache", "dxcache", "glcache", "vkcache", "nv_cache"}:
         if "user data" in normalized or "chrom" in normalized or "edge" in normalized:
             return ("browser_cache", SELF, "browser_cache", SAFE, "浏览器 GPU 缓存，关闭浏览器后通常可安全重建")
+        if not managed:
+            return ("gpu_cache", SELF, "gpu_shader_cache_unmanaged", CONFIRM_REQUIRED, "目录名疑似着色器缓存，但不在系统或应用缓存根内，清理前请确认")
         return ("gpu_cache", SELF, "gpu_shader_cache", SAFE, "GPU/着色器缓存，驱动按需自动重建")
     if lower_name in {"crashpad", "crashes", "crash reports", "crashdumps", "crash dumps", "minidump", "minidumps"}:
+        if not managed:
+            return ("crash_dump", SELF, "crash_dumps_unmanaged", CONFIRM_REQUIRED, "目录名疑似崩溃转储，但不在系统或应用缓存根内，清理前请确认")
         return ("crash_dump", SELF, "crash_dumps", SAFE, "崩溃转储缓存，通常仅用于诊断")
     if lower_name in {"reportqueue", "reportarchive"}:
+        if not managed:
+            return ("error_reports", CONTENTS, "wer_reports_unmanaged", CONFIRM_REQUIRED, "目录名疑似错误报告，但不在系统或应用缓存根内，清理前请确认")
         return ("error_reports", CONTENTS, "wer_reports", SAFE, "Windows 错误报告队列/存档，仅用于诊断")
     if lower_name in {"temp", "tmp"}:
+        if not managed:
+            return ("temp", CONTENTS, "named_temp_dir_unmanaged", CONFIRM_REQUIRED, "目录名为临时目录，但位于用户或工程目录内而非系统临时根，清理前请确认")
         return ("temp", CONTENTS, "named_temp_dir", SAFE, "临时目录，通常可重新生成")
     if lower_name in {"log", "logs"}:
+        if not managed:
+            return ("logs", CONTENTS, "logs_dir_unmanaged", CONFIRM_REQUIRED, "目录名为日志目录，但位于用户或工程目录内而非系统或应用数据根，清理前请确认")
         return ("logs", CONTENTS, "logs_dir", SAFE, "日志目录，清理后可能影响问题追踪")
     if lower_name in {"download", "downloads"}:
         return ("downloads", CONTENTS, "downloads_named_dir", CONFIRM_REQUIRED, "下载目录可能包含用户需要保留的文件")
@@ -2539,13 +2626,55 @@ def _effective_delete_mode(candidate: CleanupCandidate, requested_mode: str) -> 
     return "recycle"
 
 
+# 允许绕过回收站永久删除的规则白名单：只有"位置可确认为系统/应用所有"的显式规则在内。
+# 由目录名匹配得到的规则（named_temp_dir / logs_dir / *_unmanaged 等）一律不在白名单，
+# 因此只会移入回收站，保证任何被删内容都可恢复。
+_PERMANENT_DELETE_ALLOWED_RULES = frozenset(
+    {
+        "user_temp_windows",
+        "system_temp_windows",
+        "browser_cache",
+        "gpu_shader_cache",
+        "crash_reports",
+        "crash_dumps",
+        "wer_reports",
+        "thumbnail_cache",
+        "inet_cache",
+        "npm_cache",
+        "pip_cache",
+        "bun_cache",
+        "playwright_cache",
+        "nuitka_cache",
+        "go_build_cache",
+        "gradle_cache",
+        "java_deployment_cache",
+    }
+)
+
+
 def _candidate_can_fast_delete(candidate: CleanupCandidate) -> bool:
+    """是否允许绕过回收站直接删除（不可恢复）。
+
+    旧实现只检查 kind/rule/reason/path 拼接文本里是否含 "temp"/"cache" 等字样，
+    于是任何名为 temp 的用户目录都会被判为可永久删除。现改为双重条件：
+    规则必须命中白名单（或受信任的外部规则类型），且路径必须位于受管清理根内。
+    """
     if str(candidate.risk) != SAFE:
         return False
-    text = f"{candidate.kind} {candidate.source_rule} {candidate.reason} {candidate.path}".lower()
-    if any(token in text for token in ("temp", "tmp", "cache", "缓存", "临时")):
-        return True
-    return False
+    rule = str(candidate.source_rule)
+    if rule.startswith(_EXTERNAL_RULE_PREFIX):
+        if str(candidate.kind) not in {
+            "external_cache",
+            "external_temp",
+            "external_log",
+            "external_crash",
+            "external_file_cache",
+        }:
+            return False
+    elif rule not in _PERMANENT_DELETE_ALLOWED_RULES:
+        return False
+    # 双重保险：即使规则命中，路径也必须落在受管清理根内，否则退化为回收站删除。
+    return _is_within_managed_cleanup_root(candidate.path)
 
 
 def _is_protected_config_path(path: Path) -> bool:
@@ -2843,6 +2972,65 @@ def _candidate_allowed_by_cleaner(path: Path, kind: str, mode: str, rule: str) -
     return str(rule) in allowed_rules and str(kind) not in {"downloads", "backup", "history", "ide_history"}
 
 
+_user_data_root_prefix_cache: dict[str, list[str]] = {}
+
+
+def _user_data_root_prefixes() -> list[str]:
+    """用户文档类根目录（桌面/文档/图片/视频/音乐/OneDrive 等）的规范化前缀。
+
+    这些目录及其子目录一律不允许作为清理目标：即使其中存在名为 temp/logs/cache
+    的子目录，那也是用户自己的文件，而不是本程序可管理的缓存。
+    有意不包含"下载"目录——下载是产品明确支持的、用户确认后可清理的目标。
+    """
+    home_env = os.environ.get("USERPROFILE", "").strip()
+    onedrive_env = os.environ.get("OneDrive", "").strip()
+    try:
+        home = Path(home_env) if home_env else Path.home()
+    except (OSError, ValueError):
+        home = Path.home()
+    cache_key = f"{_normcase(str(home))}|{_normcase(onedrive_env)}"
+    cached = _user_data_root_prefix_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    candidates = [
+        home / name
+        for name in (
+            "Desktop",
+            "桌面",
+            "Documents",
+            "文档",
+            "Pictures",
+            "图片",
+            "Videos",
+            "视频",
+            "Music",
+            "音乐",
+            "Favorites",
+            "Saved Games",
+            "3D Objects",
+            "OneDrive",
+        )
+    ]
+    if onedrive_env:
+        try:
+            candidates.append(Path(onedrive_env))
+        except (OSError, ValueError):
+            pass
+
+    prefixes: list[str] = []
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            resolved = candidate.absolute()
+        prefix = _normcase(str(resolved)).rstrip("\\/")
+        if prefix and prefix not in prefixes:
+            prefixes.append(prefix)
+    _user_data_root_prefix_cache[cache_key] = prefixes
+    return prefixes
+
+
 def _is_forbidden_broad_path(path: Path | str) -> bool:
     try:
         p = Path(path).resolve()
@@ -2860,7 +3048,13 @@ def _is_forbidden_broad_path(path: Path | str) -> bool:
         _normcase(f"{drive}\\System Volume Information") if drive else "",
         _normcase(f"{drive}\\Windows\\WinSxS") if drive else "",
     }
-    return text in {x.rstrip("\\/") for x in forbidden if x}
+    if text in {x.rstrip("\\/") for x in forbidden if x}:
+        return True
+    # 用户文档类目录及其任意层子目录一律保护（默认拒绝，而不是白名单放行）。
+    for prefix in _user_data_root_prefixes():
+        if text == prefix or text.startswith(prefix + "\\"):
+            return True
+    return False
 
 
 _git_repo_cache: dict[str, bool] = {}
