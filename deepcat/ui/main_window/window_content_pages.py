@@ -310,7 +310,8 @@ class WindowContentPagesMixin:
         """打开表格记事页面，并定位到标题为"DeepCat使用指南"的记事本。
 
         若未找到该记事本，则创建一个同名记事本，并加载主程序所在目录的
-        README.md 作为使用指南内容。
+        USER_GUIDE.md 作为使用指南内容；若已存在，则将内容刷新为
+        USER_GUIDE.md 的最新内容。
         """
         # 切换到表格记事页面（index 5）
         self._switch_page(5)
@@ -324,18 +325,24 @@ class WindowContentPagesMixin:
         target_name = "DeepCat使用指南"
         for idx, tab in enumerate(self._note_tabs):
             if str(tab.get("name", "")).strip() == target_name:
-                # 找到目标记事本，切换过去
+                # 找到目标记事本，内容刷新为 USER_GUIDE.md 后切换过去
+                guide_html = self._load_user_guide_as_html()
+                if guide_html:
+                    tab["html"] = guide_html
                 if idx != self._active_note_tab:
                     self._on_tab_clicked("note", idx)
+                else:
+                    self._load_table_notes_view_safely(self._load_current_note_tab_data)
+                    self._save_table_notes_settings()
                 return
 
-        # 未找到目标记事本，创建新记事本并加载 README.md
-        self._create_usage_guide_note_from_readme(target_name)
+        # 未找到目标记事本，创建新记事本并加载 USER_GUIDE.md
+        self._create_usage_guide_note(target_name)
 
-    def _create_usage_guide_note_from_readme(self, note_name: str) -> None:
-        """创建名为 note_name 的记事本，并加载主程序目录下 README.md 的内容。"""
-        # 读取 README.md 并转换为 HTML
-        readme_html = self._load_readme_as_html()
+    def _create_usage_guide_note(self, note_name: str) -> None:
+        """创建名为 note_name 的记事本，并加载主程序目录下 USER_GUIDE.md 的内容。"""
+        # 读取 USER_GUIDE.md 并转换为 HTML
+        guide_html = self._load_user_guide_as_html()
         # 保存当前记事本数据
         self._save_current_note_tab_data()
         # 创建新记事本 tab
@@ -343,7 +350,7 @@ class WindowContentPagesMixin:
         new_index = len(self._note_tabs)
         self._note_tabs.append({
             "name": note_name,
-            "html": readme_html,
+            "html": guide_html,
             "group_name": "",
             "ima_config": default_ima_config(),
         })
@@ -355,19 +362,23 @@ class WindowContentPagesMixin:
         self._save_table_notes_settings()
         self._scroll_active_tab_into_view("note")
 
-    def _load_readme_as_html(self) -> str:
-        """读取主程序所在目录的 README.md，转换为 HTML 返回。
+    def _load_user_guide_as_html(self) -> str:
+        """读取主程序所在目录的 USER_GUIDE.md，转换为 HTML 返回。
 
-        读取或转换失败时返回空字符串，绝不抛出异常。
+        USER_GUIDE.md 缺失时回退读取 README.md；读取或转换失败时
+        返回空字符串，绝不抛出异常。
         """
         try:
             from deepcat.utils.paths import get_app_dir
             from deepcat.ui.markdown_renderer import MarkdownRenderer
 
-            readme_path = get_app_dir() / "README.md"
-            if not readme_path.exists():
+            app_dir = get_app_dir()
+            guide_path = app_dir / "USER_GUIDE.md"
+            if not guide_path.exists():
+                guide_path = app_dir / "README.md"
+            if not guide_path.exists():
                 return ""
-            md_text = readme_path.read_text(encoding="utf-8", errors="ignore")
+            md_text = guide_path.read_text(encoding="utf-8", errors="ignore")
             if not md_text.strip():
                 return ""
             return MarkdownRenderer.to_html(md_text)

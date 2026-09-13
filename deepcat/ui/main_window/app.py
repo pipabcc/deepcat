@@ -51,7 +51,8 @@ def run_app(args) -> int:
         write_crash_breadcrumb("run_app.qt_message_handler.failed")
         pass
     from PyQt6.QtNetwork import QLocalServer, QLocalSocket
-    app_id = "DeepCat_SingleInstance"
+    # 成品验证可在独立数据目录使用不同标识，避免测试启动被现有实例接走。
+    app_id = os.environ.get("DEEPCAT_INSTANCE_ID") or "DeepCat_SingleInstance"
     socket = QLocalSocket()
     socket.connectToServer(app_id)
     if socket.waitForConnected(500):

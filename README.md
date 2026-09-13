@@ -114,3 +114,7 @@ PP-OCRv6 的 ONNX 权重由 Git LFS 管理。下载源码 ZIP 不一定能得到
 配置和数据默认保存在本地，在线功能会把所需内容发送给选定服务。API 密钥、本地历史和日志不应直接提交到公开仓库；详见 [隐私说明](PRIVACY.md) 和 [安全政策](SECURITY.md)。
 
 本项目按 **GPL-3.0-or-later** 授权，见 [LICENSE](LICENSE) 和 [COPYRIGHT](COPYRIGHT)。第三方代码、运行库和模型适用各自的许可证，见 [第三方声明](THIRD_PARTY_NOTICES.md)、[依赖快照](THIRD_PARTY_LICENSES.md) 和 [许可证原文](THIRD_PARTY_LICENSES_FULL.md)。
+
+## 友情链接
+
+- [LinuxDo](https://linux.do/)

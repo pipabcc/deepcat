@@ -105,6 +105,8 @@ Copy-Item -LiteralPath .\model_catalog.json -Destination .\dist-release\deepcat
 
 在临时副本上验证时，可给测试进程设置 `DEEPCAT_SKIP_AUTOSTART_SYNC=1`，避免把正式开机启动项切到测试目录。该变量只跳过自启动路径同步，不关闭其他功能，也不改变系统网络规则。
 
+已有源码版或其他版本运行时，可仅为临时测试进程设置独立的 `DEEPCAT_INSTANCE_ID`，防止新 EXE 的启动请求被旧实例接收。使用独立的测试副本和数据目录，测试结束后退出该进程；普通启动不设置此变量，继续使用默认的单实例标识。
+
 ## CI 与实验构建
 
 [Windows CI](.github/workflows/windows-ci.yml) 包含：

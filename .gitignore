@@ -80,6 +80,7 @@ optimization-report/
 .claude/
 .codeartsdoer/
 .codebuddy/
+.workbuddy/
 _recycle*/
 
 # Local profiling, backup and diagnostic artifacts
@@ -91,6 +92,10 @@ _tmp_*.py
 .pytest-cache/
 .pytest-tmp/
 .pytest-runs/
+
+# 本地浏览器诊断记录
+/.playwright-cli/
+/output/playwright/
 
 # OS/editor noise
 .DS_Store
@@ -109,6 +114,9 @@ desktop.ini
 
 # 内部审查材料与临时诊断脚本
 /CODE_REVIEW_REPORT.md
+/AUDIT_PLAN_*.md
+/INDEPENDENT_AUDIT_*.md
+/INDEPENDENT_CODE_REVIEW_*.md
 /LLM_Drive_Cleaner_Plan.md
 /implementation_plan.md
 /polymorphic-splashing-cray.md

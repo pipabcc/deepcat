@@ -190,12 +190,15 @@ if os.path.exists(model_catalog_path):
 
 for doc_name in [
     "README.md",
+    "CHANGELOG.md",
+    "CHATGPT_WEB.md",
     "LICENSE",
     "COPYRIGHT",
     "PRIVACY.md",
     "SECURITY.md",
     "THIRD_PARTY_NOTICES.md",
     "THIRD_PARTY_LICENSES.md",
+    "THIRD_PARTY_LICENSES_FULL.md",
     "USER_GUIDE.md",
     "LOCAL_API_SERVICE.md",
 ]:
