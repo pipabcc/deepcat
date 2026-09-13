@@ -1,8 +1,31 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 
 class TestLaterReadActions(unittest.TestCase):
+    def test_empty_statistics_show_zero_size_despite_database_overhead(self) -> None:
+        from deepcat.ui.main_window.later_read import LaterReadMixin
+
+        display = Mock()
+        database_size = Mock(return_value="84.2 KB")
+        owner = SimpleNamespace(_later_read_stats=display, _later_read_database_size=database_size)
+
+        LaterReadMixin._update_later_read_stats(owner, 0, 0)
+
+        display.setText.assert_called_once_with("0 / 0 条 | 0 KB")
+        database_size.assert_not_called()
+
+    def test_filtered_empty_view_keeps_size_when_records_still_exist(self) -> None:
+        from deepcat.ui.main_window.later_read import LaterReadMixin
+
+        display = Mock()
+        owner = SimpleNamespace(_later_read_stats=display, _later_read_database_size=lambda: "84.2 KB")
+
+        LaterReadMixin._update_later_read_stats(owner, 0, 12)
+
+        display.setText.assert_called_once_with("0 / 12 条 | 84.2 KB")
+
     def test_later_read_sort_places_pinned_first_by_time(self) -> None:
         try:
             import deepcat.ui.main_window as mw

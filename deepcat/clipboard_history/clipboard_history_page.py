@@ -36,6 +36,7 @@ from deepcat.clipboard_history.clipboard_monitor import ClipboardMonitor
 from deepcat.clipboard_history.code_runner import is_runnable_web_code, preview_code_in_browser
 from deepcat.settings_store import load_settings, save_settings
 from deepcat.ui.post_capture_actions import SmoothToolTip, ModernPopupComboBox, OcrGenericMenuPopup
+from deepcat.ui.timer_scope import single_shot_scoped
 from deepcat.utils.logger import get_logger
 
 logger = get_logger("clipboard_history")
@@ -63,15 +64,26 @@ _CONTENT_TYPES = [
 ]
 
 
+#: 标题省略计算只取前 N 个字符。列表标题宽度有限（即使窗口最大化也显示不了几百字符），
+#: 但剪贴板原文可能长达上万字符；对全文做 elidedText 会让每条记录的每次重绘都变成毫秒级开销。
+_TITLE_SOURCE_MAX_CHARS = 1024
+
+_ICON_CACHE: dict[str, QIcon] = {}
+
+
 def _assets_dir() -> Path:
     return Path(__file__).resolve().parent.parent / "ui" / "assets"
 
 
 def _asset_icon(name: str, fallback: Optional[QIcon] = None) -> QIcon:
+    """按文件名缓存图标。QIcon 从 SVG 文件构造需要解析磁盘文件，逐条记录重复调用开销明显。"""
+    cached = _ICON_CACHE.get(name)
+    if cached is not None:
+        return cached
     path = _assets_dir() / name
-    if path.exists():
-        return QIcon(str(path))
-    return fallback or QIcon()
+    icon = QIcon(str(path)) if path.exists() else (fallback or QIcon())
+    _ICON_CACHE[name] = icon
+    return icon
 
 
 def _format_type_label(content_type: str, content: str) -> str:
@@ -96,6 +108,12 @@ def _format_timestamp(ts: str) -> str:
 
 def _single_line_preview(text: str) -> str:
     return " ".join(str(text or "").split())
+
+
+def _title_preview(text: object) -> str:
+    """标题省略只会显示很短的前缀；先按上限截断再压缩空白，
+    避免对上万字符的剪贴板原文做整串处理拖慢列表刷新。"""
+    return _single_line_preview(str(text or "")[:_TITLE_SOURCE_MAX_CHARS * 4])[:_TITLE_SOURCE_MAX_CHARS]
 
 
 class MonitorToggle(QWidget):
@@ -256,10 +274,12 @@ class StatisticsBar(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setToolTip("双击该处空白位置打开批量管理")
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
         self._label = QLabel("0/0条 0 KB")
+        self._label.setToolTip(self.toolTip())
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._label.setStyleSheet("color: #6b7280; font-size: 12px;")
         layout.addWidget(self._label, 1)
@@ -316,32 +336,28 @@ class _RecordItemWidget(QWidget):
         self.setObjectName("ClipboardRecordItem")
         self.setMouseTracking(True)
         self.setFixedHeight(34)
-        self._tooltip = SmoothToolTip()
+        # 提示窗口是带 Tool 标志的顶层窗口，逐条记录创建代价高。改为首次悬停时再创建。
+        self._tooltip: Optional[SmoothToolTip] = None
+        # 标题省略结果的缓存键：(宽度, 字体 key)
+        self._title_cache_key: Optional[tuple[int, object]] = None
 
         root = QHBoxLayout(self)
         root.setContentsMargins(8, 2, 3, 2)
         root.setSpacing(5)
 
-        if self._batch_mode:
-            self._checkbox = QCheckBox()
-            self._checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
-            self._checkbox.stateChanged.connect(
-                lambda state: self.selection_changed.emit(self._record_id, bool(state))
-            )
-            root.addWidget(self._checkbox)
-        else:
-            self._checkbox = None
+        self._checkbox: Optional[QCheckBox] = None
 
         self._dot = QLabel("•")
         self._dot.setFixedWidth(12)
         self._dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        dot_color = "#f59e0b" if self._is_pinned else "#94a3b8"
-        self._dot.setStyleSheet(f"color: {dot_color}; font-size: 18px; font-weight: 900;")
+        self._dot_color = "#f59e0b" if self._is_pinned else "#94a3b8"
+        self._dot.setStyleSheet(f"color: {self._dot_color}; font-size: 18px; font-weight: 900;")
         self._dot.setMouseTracking(True)
         root.addWidget(self._dot)
 
         title_source = self._file_path if self._file_path and self._content_type in ("file_path", "folder_path", "image") else self._raw_content
-        self._title_source = _single_line_preview(title_source)
+        # 只保留用于省略显示的前缀；完整原文仍保留在 _raw_content / _file_path 中供提示、复制使用。
+        self._title_source = _title_preview(title_source)
         self._title_btn = QPushButton("")
         self._title_btn.setObjectName("ClipboardRecordTitleButton")
         self._title_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -376,14 +392,10 @@ class _RecordItemWidget(QWidget):
         action_layout = QHBoxLayout(self._action_box)
         action_layout.setContentsMargins(0, 0, 0, 0)
         action_layout.setSpacing(4)
+        self._action_layout = action_layout
 
         if self._is_runnable:
-            self._run_btn = QToolButton()
-            self._run_btn.setObjectName("ClipboardRecordIconButton")
-            self._run_btn.setToolTip("在浏览器中运行预览")
-            self._run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            self._run_btn.setFixedSize(22, 22)
-            self._run_btn.clicked.connect(lambda *_: self.run_requested.emit(self._record_id))
+            self._run_btn = self._create_run_button()
             action_layout.addWidget(self._run_btn)
         else:
             self._run_btn = None
@@ -421,17 +433,38 @@ class _RecordItemWidget(QWidget):
         action_layout.addWidget(self._delete_btn)
 
         self._action_box.setFixedSize(self._action_box.sizeHint())
-        self._set_actions_visible(False)
+        self._action_height = self._action_box.sizeHint().height()
 
         self._dot.installEventFilter(self)
         self._title_btn.installEventFilter(self)
         self.ensurePolished()
-        root.activate()
+        self.set_batch_mode(batch_mode)
+
+    def set_batch_mode(self, enabled: bool) -> None:
+        """原地切换勾选框，兼容首屏和查询刷新复用的记录控件。"""
+        self._batch_mode = bool(enabled)
+        if self._batch_mode and self._checkbox is None:
+            self._checkbox = QCheckBox(self)
+            self._checkbox.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._checkbox.stateChanged.connect(
+                lambda state: self.selection_changed.emit(self._record_id, bool(state))
+            )
+            self.layout().insertWidget(0, self._checkbox)
+        if self._checkbox is not None:
+            was_blocked = self._checkbox.blockSignals(True)
+            try:
+                self._checkbox.setChecked(False)
+                self._checkbox.setVisible(self._batch_mode)
+            finally:
+                self._checkbox.blockSignals(was_blocked)
+        self.hide_tooltip()
+        self._set_actions_visible(False)
+        self.layout().activate()
         self._refresh_title_text()
 
     def setChecked(self, checked: bool) -> None:
         if self._checkbox is not None:
-            self._checkbox.setChecked(bool(checked))
+            self._checkbox.setChecked(bool(checked) and self._batch_mode)
 
     def isChecked(self) -> bool:
         if self._checkbox is not None:
@@ -441,11 +474,104 @@ class _RecordItemWidget(QWidget):
     def record_id(self) -> int:
         return self._record_id
 
+    def _create_run_button(self) -> QToolButton:
+        btn = QToolButton()
+        btn.setObjectName("ClipboardRecordIconButton")
+        btn.setToolTip("在浏览器中运行预览")
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setFixedSize(22, 22)
+        btn.clicked.connect(lambda *_: self.run_requested.emit(self._record_id))
+        return btn
+
+    def _set_run_button_enabled(self, enabled: bool) -> None:
+        """按需增删“运行预览”按钮：不同搜索结果的该状态会变化，原地调整避免整表重建。"""
+        if enabled and self._run_btn is None:
+            self._run_btn = self._create_run_button()
+            self._action_layout.insertWidget(0, self._run_btn)
+        elif not enabled and self._run_btn is not None:
+            button = self._run_btn
+            self._run_btn = None
+            self._action_layout.removeWidget(button)
+            button.setParent(None)
+            button.deleteLater()
+        self._resize_action_box()
+
+    def _resize_action_box(self) -> None:
+        """重算操作区宽度。被临时隐藏的按钮不参与布局计算，因此先临时显示再取布局尺寸，
+        保证与 ``__init__`` 中「所有按钮可见」时的结果一致。"""
+        layout = self._action_layout
+        hidden: list[QWidget] = []
+        for i in range(layout.count()):
+            widget = layout.itemAt(i).widget()
+            if widget is not None and widget.isHidden():
+                widget.setVisible(True)
+                hidden.append(widget)
+        hint = layout.sizeHint()
+        for widget in hidden:
+            widget.setVisible(False)
+        self._action_box.setFixedSize(hint.width(), self._action_height)
+
+    def apply_record(self, record_data: tuple, *, time_text: str) -> bool:
+        """把本控件原地复用为另一条记录。
+
+        命中时每条记录的成本从「新建约 10 个子控件」降到「改几个文本」。
+        """
+        record_id = int(record_data[0])
+        raw_content = str(record_data[1] or "")
+        content_type = "text" if str(record_data[2] or "text") == "code_snippet" else str(record_data[2] or "text")
+        file_path = str(record_data[4] or "")
+        is_pinned = bool(record_data[11])
+
+        self._record = record_data
+        self._record_id = record_id
+        self._raw_content = raw_content
+        self._content_type = content_type
+        self._file_path = file_path
+        self._is_pinned = is_pinned
+
+        runnable = is_runnable_web_code(raw_content, content_type, file_path)
+        if runnable != self._is_runnable:
+            self._is_runnable = runnable
+            self._set_run_button_enabled(runnable)
+            self._set_actions_visible(self._action_box.isVisible())
+
+        if is_pinned != (self._dot_color == "#f59e0b"):
+            self._dot_color = "#f59e0b" if is_pinned else "#94a3b8"
+            self._dot.setStyleSheet(f"color: {self._dot_color}; font-size: 18px; font-weight: 900;")
+
+        title_source = file_path if file_path and content_type in ("file_path", "folder_path", "image") else raw_content
+        self._title_source = _title_preview(title_source)
+        self._title_cache_key = None
+
+        self._type_label.setText(_format_type_label(content_type, raw_content))
+        self._time.setText(str(time_text))
+
+        if self._batch_mode and self._checkbox is not None:
+            was_blocked = self._checkbox.blockSignals(True)
+            try:
+                self._checkbox.setChecked(False)
+            finally:
+                self._checkbox.blockSignals(was_blocked)
+        self.hide_tooltip()
+        self._refresh_title_text()
+        self._position_action_box()
+        return True
+
     def hide_tooltip(self) -> None:
+        tip = self._tooltip
+        if tip is None:
+            return
         try:
-            self._tooltip.hide()
+            tip.hide()
         except Exception:
             pass
+
+    def _ensure_tooltip(self) -> SmoothToolTip:
+        tip = self._tooltip
+        if tip is None:
+            tip = SmoothToolTip()
+            self._tooltip = tip
+        return tip
 
     def _set_actions_visible(self, visible: bool) -> None:
         if self._batch_mode:
@@ -478,6 +604,12 @@ class _RecordItemWidget(QWidget):
 
     def _refresh_title_text(self, width: Optional[int] = None) -> None:
         target_width = self._title_btn.contentsRect().width() if width is None else int(width)
+        # 省略结果只取决于（标题原文, 可用宽度, 字体）。列表滚动/重绘会高频触发本方法，
+        # 命中缓存直接返回，避免每条记录每次重绘都重算 elidedText。
+        cache_key = (target_width, self._title_btn.font().key())
+        if cache_key == self._title_cache_key:
+            return
+        self._title_cache_key = cache_key
         text = QFontMetrics(self._title_btn.font()).elidedText(
             self._title_source,
             Qt.TextElideMode.ElideRight,
@@ -539,7 +671,7 @@ class _RecordItemWidget(QWidget):
                             max_height = min(max_height or above_space, max(40, above_space))
                         else:
                             max_height = min(max_height or below_space, max(40, below_space))
-                    self._tooltip.show_text(
+                    self._ensure_tooltip().show_text(
                         tip_text,
                         pos,
                         direction=direction,
@@ -548,7 +680,7 @@ class _RecordItemWidget(QWidget):
                         max_height=max_height,
                     )
             elif event.type() in {QEvent.Type.HoverLeave, QEvent.Type.Leave}:
-                self._tooltip.hide()
+                self.hide_tooltip()
         return super().eventFilter(watched, event)
 
     def enterEvent(self, event) -> None:
@@ -802,13 +934,26 @@ class RecordListWidget(QListWidget):
         self._empty_action_callback = action_callback
 
     def set_batch_mode(self, enabled: bool) -> None:
-        self._batch_mode = bool(enabled)
         self.setSelectionMode(
             QAbstractItemView.SelectionMode.NoSelection
         )
+        enabled = bool(enabled)
+        if self._batch_mode == enabled:
+            return
+        self._batch_mode = enabled
+        for widget in self._record_widgets.values():
+            widget.set_batch_mode(enabled)
+        self._sync_item_widget_layout()
 
     def load_records(self, records: list[tuple], pinned: list[tuple]) -> None:
         self._hide_record_tooltips()
+        # 行数与置顶折叠结构不变时原地复用行控件（搜索输入过程中最常见），
+        # 避免每次关键词变化都重建 50 个记录控件阻塞主线程。
+        try:
+            if self._update_records_in_place(records, pinned):
+                return
+        except Exception as error:
+            logger.warning("原地刷新复制记录行失败，回退整表重建：%s", error)
         self._loaded_records = list(records)
         self._loaded_pinned = list(pinned)
 
@@ -825,6 +970,44 @@ class RecordListWidget(QListWidget):
         self._has_more = len(records) >= PAGE_SIZE
         self._loading_more = False
         self._schedule_layout_sync()
+
+    def _update_records_in_place(self, records: list[tuple], pinned: list[tuple]) -> bool:
+        """结构一致时原地刷新行内容；不满足条件时返回 False，由调用方走整表重建。"""
+        total = len(pinned) + len(records)
+        if total <= 0 or self._empty_item is not None:
+            return False
+        if total != len(self._record_widgets):
+            return False
+        if (len(pinned) > 3) != (self._toggle_item is not None):
+            return False
+
+        widgets: list[_RecordItemWidget] = []
+        for i in range(self.count()):
+            widget = self.itemWidget(self.item(i))
+            if isinstance(widget, _RecordItemWidget):
+                widgets.append(widget)
+        if len(widgets) != total:
+            return False
+
+        # 置顶行在前，普通行在后，与 _rebuild_list 的插入顺序一致。
+        ordered = list(pinned) + list(records)
+        refreshed: dict[int, _RecordItemWidget] = {}
+        for widget, record in zip(widgets, ordered):
+            if not widget.apply_record(record, time_text=_format_timestamp(str(record[7] or ""))):
+                return False
+            refreshed[int(record[0])] = widget
+
+        self._loaded_pinned = list(pinned)
+        self._loaded_records = list(records)
+        self._record_widgets = refreshed
+        self._pinned_folded = True
+        self._current_offset = len(records)
+        self._has_more = len(records) >= PAGE_SIZE
+        self._loading_more = False
+        self._update_has_items_state(has_items=True)
+        self._apply_fold_visibility()
+        self._schedule_layout_sync()
+        return True
 
     def append_records(self, records: list[tuple]) -> None:
         loaded_ids = {record[0] for record in self._loaded_records}
@@ -1083,7 +1266,7 @@ class RecordListWidget(QListWidget):
             for widget in list(self._record_widgets.values()):
                 try:
                     widget.updateGeometry()
-                    widget._refresh_title_text(widget._title_btn.width())
+                    widget._refresh_title_text(widget._title_btn.contentsRect().width())
                     widget._position_action_box()
                     widget.update()
                 except RuntimeError:
@@ -1714,8 +1897,9 @@ class ClipboardHistoryPage(QWidget):
         label.raise_()
         label.show()
         if int(auto_hide_ms or 0) > 0:
-            QTimer.singleShot(
+            single_shot_scoped(
                 int(auto_hide_ms),
+                label,
                 lambda current=token, target=label: target.hide()
                 if isinstance(target, QLabel) and int(target.property("statusToken") or 0) == current
                 else None,
@@ -2063,6 +2247,8 @@ class ClipboardHistoryPage(QWidget):
                     if rec:
                         self._record_list.prepend_record(rec)
                         self._update_statistics()
+                        if self._batch_mode:
+                            self._update_batch_selection_controls()
                 else:
                     self._dirty = True
             if record_id is not None:
@@ -2183,6 +2369,8 @@ class ClipboardHistoryPage(QWidget):
             self._dirty = False
         total, data_size = data["statistics"]
         self._statistics_bar.update_stats(self._record_list.record_count(), total, data_size)
+        if self._batch_mode:
+            self._update_batch_selection_controls()
 
     def _on_query_failed(self, message: str) -> None:
         self._record_list._loading_more = False
@@ -2190,6 +2378,11 @@ class ClipboardHistoryPage(QWidget):
         self._show_inline_status(f"读取复制记录失败：{message}", tone="error")
 
     def _on_item_clicked(self, record_id: int) -> None:
+        if self._batch_mode:
+            widget = self._record_list._record_widgets.get(record_id)
+            if widget is not None:
+                widget.setChecked(not widget.isChecked())
+            return
         if self._database is None:
             return
         try:
@@ -2373,37 +2566,47 @@ class ClipboardHistoryPage(QWidget):
                 statistics_only=True,
             )
 
-    def _update_batch_selected_count(self) -> None:
+    def _update_batch_selection_controls(self) -> None:
         if not hasattr(self, "_batch_sel_count_label") or not hasattr(self, "_record_list"):
             return
         selected_count = len(self._record_list.selected_record_ids())
         self._batch_sel_count_label.setText(f"{selected_count} 条")
+        selectable = [
+            widget for widget in self._record_list._record_widgets.values() if not widget._is_pinned
+        ]
+        was_blocked = self._batch_select_all.blockSignals(True)
+        try:
+            self._batch_select_all.setChecked(
+                bool(selectable) and all(widget.isChecked() for widget in selectable)
+            )
+        finally:
+            self._batch_select_all.blockSignals(was_blocked)
+        self._batch_select_all.setEnabled(bool(selectable))
+        self._batch_delete.setEnabled(selected_count > 0)
 
     def _toggle_batch_mode(self, enabled: bool) -> None:
         self._batch_mode = bool(enabled)
         is_batch = bool(enabled)
         self._batch_select_all.setVisible(is_batch)
-        self._batch_select_all.setChecked(False)
         self._batch_delete.setVisible(is_batch)
         self._batch_done.setVisible(is_batch)
         self._statistics_bar.setVisible(not is_batch)
         self._batch_hotspot.setVisible(is_batch)
         self._record_list.set_batch_mode(is_batch)
-        self._update_batch_selected_count()
-        self._refresh_list()
+        self._update_batch_selection_controls()
 
     def _on_batch_select_all(self, state: int) -> None:
+        if not self._batch_mode:
+            return
         checked = bool(state)
-        for i in range(self._record_list.count()):
-            row = self._record_list.item(i)
-            widget = self._record_list.itemWidget(row)
-            if isinstance(widget, _RecordItemWidget):
-                # 排除置顶项：如果是置顶项，绝对保持未勾选（False）安全状态，不参与批量删除
-                if widget._is_pinned:
-                    widget.setChecked(False)
-                else:
-                    widget.setChecked(checked)
-        self._update_batch_selected_count()
+        was_blocked = self._record_list.blockSignals(True)
+        try:
+            for widget in self._record_list._record_widgets.values():
+                # 全选沿用置顶保护，完成后统一更新计数，避免逐行重复扫描列表。
+                widget.setChecked(checked and not widget._is_pinned)
+        finally:
+            self._record_list.blockSignals(was_blocked)
+        self._update_batch_selection_controls()
 
     def _on_batch_delete(self) -> None:
         ids = self._record_list.selected_record_ids()
@@ -2438,7 +2641,7 @@ class ClipboardHistoryPage(QWidget):
                 self._show_inline_status(f"批量删除失败：{e}", tone="error", auto_hide_ms=5200)
 
     def _on_selection_changed(self, record_id: int, checked: bool) -> None:
-        self._update_batch_selected_count()
+        self._update_batch_selection_controls()
 
     def _filter_keywords(self) -> list[str]:
         try:

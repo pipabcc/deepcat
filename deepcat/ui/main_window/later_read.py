@@ -841,13 +841,14 @@ class LaterReadMixin:
 
         self._later_read_batch_hotspot = QWidget()
         self._later_read_batch_hotspot.setObjectName("LaterReadBatchHotspot")
-        self._later_read_batch_hotspot.setToolTip("双击空白区域进入批量操作")
+        self._later_read_batch_hotspot.setToolTip("双击该处空白位置打开批量管理")
         self._later_read_batch_hotspot.setMinimumHeight(30)
         self._later_read_batch_hotspot.setMinimumWidth(0)
         hotspot_layout = QHBoxLayout(self._later_read_batch_hotspot)
         hotspot_layout.setContentsMargins(0, 0, 0, 0)
         hotspot_layout.setSpacing(6)
         self._later_read_stats = QLabel("显示 0 / 共 0 条")
+        self._later_read_stats.setToolTip(self._later_read_batch_hotspot.toolTip())
         self._later_read_stats.setObjectName("LaterReadStats")
         self._later_read_stats.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hotspot_layout.addWidget(self._later_read_stats, 1)
@@ -1219,7 +1220,8 @@ class LaterReadMixin:
 
     def _update_later_read_stats(self, current_count: int, total_count: int) -> None:
         if hasattr(self, "_later_read_stats"):
-            size_str = self._later_read_database_size()
+            is_empty = int(current_count) == 0 and int(total_count) == 0
+            size_str = "0 KB" if is_empty else self._later_read_database_size()
             self._later_read_stats.setText(f"{int(current_count)} / {int(total_count)} 条 | {size_str}")
 
     def _update_later_read_batch_selected_count(self) -> None:
