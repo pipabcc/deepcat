@@ -5,6 +5,7 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -92,10 +93,12 @@ def test_overlapping_requests_have_exclusive_sessions(sessions):
 
 
 def test_expired_auth_is_refreshed_on_the_existing_connection(monkeypatch, sessions):
-    monkeypatch.setattr(transport, "AUTH_CACHE_SECONDS", 0.001)
+    now = [100.0]
+    # Windows 的单调时钟精度可能大于短暂休眠，显式推进时钟以稳定覆盖过期边界。
+    monkeypatch.setattr(transport, "time", SimpleNamespace(monotonic=lambda: now[0], time=time.time))
     first, _, _ = acquire()
     first.close()
-    time.sleep(0.01)
+    now[0] += transport.AUTH_CACHE_SECONDS + 1
     second, _, _ = acquire()
     second.close()
 
